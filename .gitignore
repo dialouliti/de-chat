@@ -1,0 +1,28 @@
+# Binaries
+/bin/
+/deChat
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test / coverage
+*.test
+*.out
+coverage.txt
+
+# Dependency directories
+/vendor/
+
+# Environment
+.env
+.env.local
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+*.local
