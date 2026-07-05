@@ -6,13 +6,21 @@ only things that aren't obvious from a glance at the code.
 
 ## What this is
 
-A real-time chat **backend** for a private group: JSON REST API + WebSocket.
-Three binaries, one module (`github.com/pavelananev/dechat`):
+A real-time chat **backend** for a private group: JSON REST API + WebSocket,
+plus a React + TypeScript PWA client.
+
+One Go module (`github.com/pavelananev/dechat`), four binaries:
 
 - `cmd/server` — the API/WS server (`dechat`)
 - `cmd/client` — line-based console chat client (`dechat-client`)
 - `cmd/admin` — admin console client (`dechat-admin`)
 - `cmd/openapi` — dumps the OpenAPI spec to disk (`dechat-openapi`)
+
+And one separate Node project:
+
+- `web/` — React + TypeScript PWA client (`dechat-web`), uses pnpm. Its typed
+  API client is **generated** from the Go server's `openapi.json`. See
+  `web/README.md` and `docs/CLIENT_NEXT_STEPS.md`.
 
 ## Commands
 
@@ -29,6 +37,23 @@ make openapi        # writes ./openapi.json + ./openapi.yaml
 make vet            # go vet ./...
 make test           # go test ./...
 ```
+
+The web client (in `web/`, uses **pnpm**):
+
+```bash
+cd web
+pnpm install        # first time; pnpm-workspace.yaml approves esbuild's build
+pnpm gen:api        # regenerate src/api/schema.ts from ../openapi.json
+pnpm gen:icons      # regenerate placeholder PWA icons (run once)
+pnpm dev            # Vite dev server on :5173, proxies /api → :8080
+pnpm typecheck      # tsc --noEmit
+pnpm build          # production build → web/dist/
+```
+
+**Keep client and server in sync:** when the Go API changes, run
+`make openapi` then `cd web && pnpm gen:api && pnpm typecheck`. The generated
+`src/api/schema.ts` is gitignored. If the API contract changes, the server's
+`internal/httpapi/openapi.go` (the spec builder) must be updated too.
 
 When running any `go` command directly, set `GOTOOLCHAIN=local` — see the
 gotcha below.
@@ -100,7 +125,17 @@ gotcha below.
 - **`.env` is gitignored** and holds secrets — never print or commit it.
   `.env.example` is the template.
 - **`bin/`, `openapi.json`, `openapi.yaml` are generated** and gitignored.
-  Don't commit them.
+  Don't commit them. `web/src/api/schema.ts` and `web/dist/` are also
+  generated — never hand-edit the schema file.
+- **CORS is required for any browser client.** The backend applies the
+  `CORS_ORIGIN` env (default `*`) via middleware in `internal/httpapi/cors.go`,
+  wired before the auth middleware so preflight OPTIONS requests aren't
+  rejected. If you add a new browser-facing route, it inherits CORS
+  automatically; if you change auth, keep CORS ahead of it.
+- **Web client build quirk (pnpm + esbuild).** pnpm v11 blocks esbuild's
+  postinstall by default; `web/pnpm-workspace.yaml` allows it. If
+  `pnpm build` fails with esbuild missing, run `pnpm rebuild esbuild` or
+  `pnpm add -D @esbuild/<platform>` directly.
 
 ## Before editing sensitive areas
 

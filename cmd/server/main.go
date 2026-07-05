@@ -71,7 +71,12 @@ func main() {
 	go h.Run(notifyOnStop())
 
 	wsHandler := ws.New(h, store, authSvc, log.With("component", "ws"))
-	handler := httpapi.New(httpapi.Deps{Store: store, Auth: authSvc, WS: wsHandler})
+	handler := httpapi.New(httpapi.Deps{
+		Store:      store,
+		Auth:       authSvc,
+		WS:         wsHandler,
+		CORSOrigin: cfg.CORSOrigin,
+	})
 
 	srv := server.New(cfg.ServerAddr, handler, log.With("component", "server"))
 

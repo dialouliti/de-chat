@@ -16,6 +16,9 @@ type Deps struct {
 	Store *postgres.Store
 	Auth  *auth.Service
 	WS    *ws.Handler
+	// CORSOrigin controls the Access-Control-Allow-Origin response header.
+	// "*", a single origin, or a comma-separated list. Empty defaults to "*".
+	CORSOrigin string
 }
 
 // New builds the top-level http.Handler with all routes mounted under
@@ -26,6 +29,9 @@ func New(d Deps) http.Handler {
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
 	r.Use(chimw.Recoverer)
+	// CORS must run before the auth middleware so preflight OPTIONS requests
+	// (which carry no credentials) are answered without a 401.
+	r.Use(cors(corsOptions{allowOrigin: d.CORSOrigin}))
 	// No request body size limiting for now; v1 messages are text-only and
 	// already capped at the WS layer. Easy to add chimw.RequestSize later.
 

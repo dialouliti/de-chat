@@ -1,6 +1,6 @@
 # deChat
 
-A small real-time chat **backend** for a private group, written in Go. It exposes a JSON REST API and a WebSocket endpoint for live message delivery. There is **no frontend** and **no open registration**: an administrator creates all user accounts and all rooms.
+A real-time chat **backend** for a private group, written in Go. It exposes a JSON REST API and a WebSocket endpoint for live message delivery. There is **no open registration**: an administrator creates all user accounts and all rooms. A React + TypeScript **PWA client** lives in [`web/`](web/), and two console clients (`dechat-client`, `dechat-admin`) are provided for terminal use and administration.
 
 ## Features (v1)
 
@@ -57,6 +57,19 @@ All settings come from environment variables (see `.env.example`):
 | `ADMIN_USERNAME` | `admin`     | Bootstrap admin username                           |
 | `ADMIN_PASSWORD` | *(empty)*   | Bootstrap admin password; random if empty          |
 | `LOG_LEVEL`      | `info`      | `debug`/`info`/`warn`/`error`                      |
+| `CORS_ORIGIN`    | `*`         | Browser CORS: `*`, a single origin, or a list      |
+
+## Clients
+
+- **Web PWA** ([`web/`](web/)) — React + TypeScript, installable. Login, room
+  list, real-time chat. See [`web/README.md`](web/README.md).
+- **Console client** (`make build-client`) — line-based terminal client.
+- **Admin client** (`make build-client-admin`) — terminal admin tool for
+  users/rooms.
+
+The web client's typed API layer is generated from this server's
+`openapi.json`; see the [OpenAPI spec](#openapi-spec) section. The roadmap to
+calls/group-calls lives in [`docs/CLIENT_NEXT_STEPS.md`](docs/CLIENT_NEXT_STEPS.md).
 
 ## OpenAPI spec
 

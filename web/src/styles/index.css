@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    font-family:
+      -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu,
+      Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Dark theme is the default; the app is a private tool used at all hours. */
+  :root {
+    color-scheme: dark;
+  }
+}
+
+@layer components {
+  /* Thin scrollbar that fits the dark theme. */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(51 65 85) transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: rgb(51 65 85);
+    border-radius: 3px;
+  }
+}

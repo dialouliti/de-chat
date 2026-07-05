@@ -1,0 +1,16 @@
+node_modules
+dist
+dist-ssr
+*.local
+
+# Generated from ../openapi.json by `pnpm gen:api` — do not hand-edit.
+src/api/schema.ts
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+
+# Vite
+*.tsbuildinfo

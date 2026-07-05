@@ -17,6 +17,10 @@ type Config struct {
 	AdminUsername string
 	AdminPassword string // may be empty -> a random one is generated at startup
 	LogLevel      string
+	// CORSOrigin controls the browser CORS policy. "*", a single origin, or a
+	// comma-separated list. Empty defaults to "*". The web client needs this
+	// when it is not served from the same origin as the API.
+	CORSOrigin string
 }
 
 // Load reads configuration from the environment. Required values that are
@@ -30,6 +34,7 @@ func Load() (Config, error) {
 		AdminUsername: env("ADMIN_USERNAME", "admin"),
 		AdminPassword: env("ADMIN_PASSWORD", ""),
 		LogLevel:      strings.ToLower(env("LOG_LEVEL", "info")),
+		CORSOrigin:    env("CORS_ORIGIN", "*"),
 	}
 
 	if cfg.DatabaseURL == "" {
