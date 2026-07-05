@@ -32,7 +32,7 @@ export function MessageInput({ onSend, disabled }: Props) {
           onKeyDown={handleKeyDown}
           rows={1}
           disabled={disabled}
-          placeholder="Type a message…  (Enter to send, Shift+Enter for newline)"
+          placeholder="Type a message"
           className="flex-1 resize-none rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-brand focus:outline-none disabled:opacity-50"
         />
         <button
