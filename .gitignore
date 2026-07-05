@@ -15,6 +15,10 @@ coverage.txt
 # Dependency directories
 /vendor/
 
+# Generated OpenAPI spec (produced by `make openapi`)
+/openapi.json
+/openapi.yaml
+
 # Environment
 .env
 .env.local

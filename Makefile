@@ -1,4 +1,4 @@
-.PHONY: help tidy run build build-client build-admin run-client run-admin vet test docker-up docker-down fmt
+.PHONY: help tidy run build build-client build-admin run-client run-admin vet test docker-up docker-down fmt openapi
 
 GO ?= go
 
@@ -24,6 +24,9 @@ build-client: ## Build the console client binary into ./bin
 build-admin: ## Build the admin client binary into ./bin
 	@mkdir -p bin
 	$(GO) build -o bin/dechat-admin ./cmd/admin
+
+openapi: ## Dump the OpenAPI spec to ./openapi.json and ./openapi.yaml
+	$(GO) run ./cmd/openapi
 
 run-client: ## Run the console client locally (reads DECHAT_URL / environment)
 	$(GO) run ./cmd/client

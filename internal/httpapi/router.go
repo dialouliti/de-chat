@@ -73,5 +73,15 @@ func New(d Deps) http.Handler {
 		_, _ = w.Write([]byte("ok"))
 	})
 
+	// OpenAPI spec + Swagger UI. Public (no auth): the spec advertises the
+	// auth scheme, and clients need to read it before they have a token. The
+	// SpecServer builds the document lazily on first request and caches it.
+	spec := NewSpecServer()
+	r.Get("/openapi.json", spec.ServeJSON)
+	r.Get("/openapi.yaml", spec.ServeYAML)
+	r.Get("/docs", spec.ServeUI)
+	// Convenience aliases so /docs/ also works when typed into a browser.
+	r.Get("/docs/", spec.ServeUI)
+
 	return r
 }
