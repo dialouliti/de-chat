@@ -57,6 +57,9 @@ func BuildSpec() (*openapi3.T, error) {
 		{"LoginResponse", loginResponse{}},
 		{"CreateUserRequest", createUserRequest{}},
 		{"CreateRoomRequest", CreateRoomRequest{}},
+		{"AddMemberRequest", addMemberRequest{}},
+		{"RoomMember", models.RoomMember{}},
+		{"ReadReceipt", models.ReadReceipt{}},
 		// WebSocket envelopes (documented in info.description, not as a path).
 		{"ClientMsg", models.ClientMsg{}},
 		{"ServerMsg", models.ServerMsg{}},
@@ -256,9 +259,9 @@ func BuildSpec() (*openapi3.T, error) {
 	paths.Set("/api/v1/rooms/{id}", &openapi3.PathItem{
 		Delete: &openapi3.Operation{
 			OperationID: "deleteRoom",
-			Tags:        []string{"rooms", "admin"},
+			Tags:        []string{"rooms"},
 			Summary:     "Delete room",
-			Description: "Admin only. Deletes the room and all of its messages (cascade).",
+			Description: "Deletes the room and all of its messages (cascade). The room's owner or a global admin may delete it.",
 			Security:    jwt(),
 			Parameters:  openapi3.Parameters{uuidPath("id", "Room ID")},
 			Responses: responses(
@@ -273,11 +276,65 @@ func BuildSpec() (*openapi3.T, error) {
 	paths.Set("/api/v1/rooms/{id}/clear", &openapi3.PathItem{
 		Post: &openapi3.Operation{
 			OperationID: "clearRoom",
-			Tags:        []string{"rooms", "admin"},
+			Tags:        []string{"rooms"},
 			Summary:     "Clear room",
-			Description: "Admin only. Deletes all messages in the room but keeps the room itself.",
+			Description: "Deletes all messages in the room but keeps the room itself. The room's owner or a global admin may clear it.",
 			Security:    jwt(),
 			Parameters:  openapi3.Parameters{uuidPath("id", "Room ID")},
+			Responses: responses(
+				rr("204", empty204()),
+				rr("401", errResp()),
+				rr("403", errResp()),
+				rr("404", errResp()),
+			),
+		},
+	})
+
+	// ---- Room membership (owner-or-admin for write, any authed for read) --
+
+	paths.Set("/api/v1/rooms/{id}/members", &openapi3.PathItem{
+		Get: &openapi3.Operation{
+			OperationID: "listRoomMembers",
+			Tags:        []string{"rooms", "members"},
+			Summary:     "List room members",
+			Description: "Returns every member of a room with their per-room role. Any authenticated user can view.",
+			Security:    jwt(),
+			Parameters:  openapi3.Parameters{uuidPath("id", "Room ID")},
+			Responses: responses(
+				rr("200", listResp("OK", "RoomMember")),
+				rr("401", errResp()),
+				rr("404", errResp()),
+			),
+		},
+		Post: &openapi3.Operation{
+			OperationID: "addRoomMember",
+			Tags:        []string{"rooms", "members"},
+			Summary:     "Add / update room member",
+			Description: "Adds a member or updates an existing member's role. Owner or admin only.",
+			Security:    jwt(),
+			Parameters:  openapi3.Parameters{uuidPath("id", "Room ID")},
+			RequestBody: refBody("AddMemberRequest"),
+			Responses: responses(
+				rr("204", empty204()),
+				rr("400", errResp()),
+				rr("401", errResp()),
+				rr("403", errResp()),
+				rr("404", errResp()),
+			),
+		},
+	})
+
+	paths.Set("/api/v1/rooms/{id}/members/{userId}", &openapi3.PathItem{
+		Delete: &openapi3.Operation{
+			OperationID: "removeRoomMember",
+			Tags:        []string{"rooms", "members"},
+			Summary:     "Remove room member",
+			Description: "Removes a member from the room. Owner or admin only. Only an admin can remove an owner.",
+			Security:    jwt(),
+			Parameters: openapi3.Parameters{
+				uuidPath("id", "Room ID"),
+				uuidPath("userId", "User ID to remove"),
+			},
 			Responses: responses(
 				rr("204", empty204()),
 				rr("401", errResp()),

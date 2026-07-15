@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { ProtectedRoute } from '@/components/ProtectedRoute'
 import { LoginPage } from '@/features/auth/LoginPage'
 import { RoomListPage } from '@/features/rooms/RoomListPage'
+import { RoomMembersPage } from '@/features/rooms/RoomMembersPage'
 import { ChatRoomPage } from '@/features/chat/ChatRoomPage'
 
 export default function App() {
@@ -23,6 +24,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <ChatRoomPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/rooms/:id/members"
+        element={
+          <ProtectedRoute>
+            <RoomMembersPage />
           </ProtectedRoute>
         }
       />

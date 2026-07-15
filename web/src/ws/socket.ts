@@ -2,8 +2,9 @@
 //
 // Server behavior (see internal/ws/handler.go):
 //   - Pings every ~54s; drops the connection if no pong within 60s.
-//   - Sends ServerMsg envelopes: {type:"message"|"pong"|"error", ...}
+//   - Sends ServerMsg envelopes: {type, message?, ...}
 //   - Broadcasts to ALL connected clients; the client filters by room_id.
+//   - Presence events are global (no room_id); handled specially by consumers.
 //
 // This wrapper handles: connect with ?token=, exponential-backoff reconnect,
 // ping heartbeat, and typed dispatch of incoming ServerMsgs.
@@ -11,18 +12,52 @@
 import { getToken } from '@/store/auth'
 import { toWsUrl } from '@/lib/format'
 
-export interface ServerMessage {
+export interface MessagePayload {
+  id: string
+  room_id: string
+  user_id: string
+  username: string
+  content: string
+  created_at: string
+  edited_at?: string | null
+}
+
+export interface PresenceUser {
+  user_id: string
+  username: string
+}
+
+export interface ReadReceiptPayload {
+  user_id: string
+  username: string
+  last_read_at: string
+}
+
+export type ServerMessage = {
   type: 'message' | 'pong' | 'error'
-  message?: {
-    id: string
-    room_id: string
-    user_id: string
-    username: string
-    content: string
-    created_at: string
-  }
+  message?: MessagePayload
   message_id?: string
   text?: string
+} | {
+  type: 'typing'
+  room_id: string
+  user_id: string
+  username: string
+  is_typing: boolean
+} | {
+  type: 'presence'
+  user_id: string
+  username: string
+  is_online: boolean
+  online_users?: PresenceUser[]
+} | {
+  type: 'read_receipt'
+  room_id: string
+  read_by: ReadReceiptPayload[]
+} | {
+  type: 'message_edited'
+  message: MessagePayload
+  message_id: string
 }
 
 export type ServerMessageHandler = (m: ServerMessage) => void
@@ -109,6 +144,26 @@ export class ChatSocket {
     return true
   }
 
+  /** Send a chat message. */
+  sendMessage(roomId: string, content: string): boolean {
+    return this.send({ type: 'message', room_id: roomId, content })
+  }
+
+  /** Notify the room that the user started or stopped typing. */
+  sendTyping(roomId: string, isTyping: boolean): boolean {
+    return this.send({ type: 'typing', room_id: roomId, is_typing: isTyping })
+  }
+
+  /** Mark a room as read (advances the read cursor). */
+  sendRead(roomId: string): boolean {
+    return this.send({ type: 'read', room_id: roomId })
+  }
+
+  /** Edit one of the caller's own messages. */
+  sendEdit(roomId: string, messageId: string, content: string): boolean {
+    return this.send({ type: 'edit', room_id: roomId, message_id: messageId, content })
+  }
+
   close() {
     this.manuallyClosed = true
     this.stopPing()
@@ -119,9 +174,6 @@ export class ChatSocket {
 
   private startPing() {
     this.stopPing()
-    // The server replies with a {type:"pong"} ClientMsg-compatible ping.
-    // Sending our own ping keeps the link warm independent of the server's
-    // own ping schedule.
     this.pingTimer = setInterval(() => {
       this.send({ type: 'ping' })
     }, PING_INTERVAL_MS)

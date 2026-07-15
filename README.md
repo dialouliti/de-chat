@@ -5,12 +5,17 @@ A real-time chat **backend** for a private group, written in Go. It exposes a JS
 ## Features (v1)
 
 - Login with username + password → JWT
-- Admin-managed users (create / list / delete)
+- Admin-managed users (create / list / delete / block)
 - Admin-managed rooms (create / delete / clear)
 - Real-time messages over WebSocket
 - PostgreSQL-backed message history with cursor pagination
 - Messages are kept indefinitely (admin can clear a room on demand)
 - All authenticated users can see all rooms
+- **Presence** — see who's online
+- **Typing indicators** — real-time "Alice is typing…"
+- **Read receipts** — sender sees "Read by N"
+- **Message editing** — edit your own messages (`edited_at` tracked)
+- **Room roles** — per-room owner/member (moderation-only); owners can delete/clear their rooms and manage members
 
 Designed so that future **calls / group calls** (WebRTC signaling) can reuse the same room + hub model.
 
@@ -115,12 +120,17 @@ All endpoints are under `/api/v1`. Protected endpoints require
 | POST   | `/login`          | no   | `{username, password}` → `{token, username, role}` |
 | GET    | `/me`             | yes  | Returns the caller's profile         |
 
-### Rooms & messages (any user)
+### Rooms & messages (any authenticated user)
 
 | Method | Path                              | Notes                                             |
 |--------|-----------------------------------|---------------------------------------------------|
 | GET    | `/rooms`                          | List all rooms                                    |
 | GET    | `/rooms/{id}/messages`            | Message history (newest-first), paginated         |
+| GET    | `/rooms/{id}/members`             | List room members + roles                         |
+| DELETE | `/rooms/{id}`                     | Delete room (owner or admin)                      |
+| POST   | `/rooms/{id}/clear`               | Clear messages, keep room (owner or admin)        |
+| POST   | `/rooms/{id}/members`             | Add/update member (owner or admin)                |
+| DELETE | `/rooms/{id}/members/{userId}`    | Remove member (owner or admin)                    |
 
 `/rooms/{id}/messages` query params:
 
@@ -131,9 +141,7 @@ All endpoints are under `/api/v1`. Protected endpoints require
 
 | Method | Path                       | Body / Notes                                  |
 |--------|----------------------------|-----------------------------------------------|
-| POST   | `/rooms`                   | `{name, description}` → room                  |
-| DELETE | `/rooms/{id}`              | Deletes room and its messages                 |
-| POST   | `/rooms/{id}/clear`        | Deletes all messages, keeps the room          |
+| POST   | `/rooms`                   | `{name, description}` → room (creator = owner) |
 | POST   | `/admin/users`             | `{username, password, role?}` → user          |
 | GET    | `/admin/users`             | List all users                                |
 | DELETE | `/admin/users/{id}`        | Deletes user (and their messages via cascade) |
@@ -169,7 +177,25 @@ Send a chat message:
 { "type": "message", "room_id": "<uuid>", "content": "hello" }
 ```
 
-Or a lightweight ping:
+Edit your own message (admins can edit anyone's):
+
+```json
+{ "type": "edit", "room_id": "<uuid>", "message_id": "<uuid>", "content": "new text" }
+```
+
+Typing indicator (debounced server-side — only emitted on a real state change):
+
+```json
+{ "type": "typing", "room_id": "<uuid>", "is_typing": true }
+```
+
+Mark a room as read (advances your read cursor; triggers a `read_receipt` broadcast):
+
+```json
+{ "type": "read", "room_id": "<uuid>" }
+```
+
+Lightweight ping:
 
 ```json
 { "type": "ping" }
@@ -184,14 +210,38 @@ persisted to the database):
 {
   "type": "message",
   "message": {
-    "id": "<uuid>",
-    "room_id": "<uuid>",
-    "user_id": "<uuid>",
-    "username": "alice",
-    "content": "hello",
+    "id": "<uuid>", "room_id": "<uuid>", "user_id": "<uuid>",
+    "username": "alice", "content": "hello",
     "created_at": "2026-07-04T12:00:00Z"
   }
 }
+```
+
+Edited message (broadcast with the updated row; `edited_at` is set):
+
+```json
+{
+  "type": "message_edited", "message_id": "<uuid>",
+  "message": { "id": "<uuid>", "content": "new text", "edited_at": "2026-07-04T12:01:00Z", ... }
+}
+```
+
+Typing indicator (broadcast to the room):
+
+```json
+{ "type": "typing", "room_id": "<uuid>", "user_id": "<uuid>", "username": "alice", "is_typing": true }
+```
+
+Presence (global — on connect/disconnect; `online_users` only on initial snapshot):
+
+```json
+{ "type": "presence", "user_id": "<uuid>", "username": "alice", "is_online": true, "online_users": [{...}] }
+```
+
+Read receipt (broadcast to the room after someone marks it read):
+
+```json
+{ "type": "read_receipt", "room_id": "<uuid>", "read_by": [{"user_id":"<uuid>","username":"bob","last_read_at":"..."}] }
 ```
 
 Pong reply:
@@ -200,7 +250,7 @@ Pong reply:
 { "type": "pong", "text": "pong" }
 ```
 
-Client-local error (e.g. invalid payload, unknown room):
+Client-local error (e.g. invalid payload, unknown room, editing another's message):
 
 ```json
 { "type": "error", "message_id": "<uuid or nil>", "text": "room not found" }

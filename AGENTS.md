@@ -1,8 +1,9 @@
 # AGENTS.md
 
 Project-specific guidance for ZCode agents working in this repo.
-Read the **README.md** first for full API/architecture docs; this file captures
-only things that aren't obvious from a glance at the code.
+Read the **README.md** first for user-facing API/architecture docs; this file
+captures the developer-facing map: structure, architecture, data model,
+protocol, and the rules that matter for edits.
 
 ## What this is
 
@@ -58,6 +59,39 @@ pnpm build          # production build → web/dist/
 When running any `go` command directly, set `GOTOOLCHAIN=local` — see the
 gotcha below.
 
+## Project layout
+
+```
+cmd/
+  server/main.go            # entrypoint: config, DB, migrations, hub, server
+  client/main.go            # line-based console chat client
+  admin/main.go             # admin console client (users + rooms management)
+  openapi/main.go           # dumps openapi.{json,yaml} to disk
+internal/
+  config/                   # env-based config
+  models/                   # User, Room, Message, RoomMember, ReadReceipt,
+                            # WS envelope types (ClientMsg, ServerMsg, PresenceUser)
+  auth/                     # JWT (HS256) + bcrypt; RequireAuth/RequireAdmin
+  hub/                      # in-memory broadcast core + presence index
+  ws/                       # WebSocket endpoint (upgrade, read/write pumps)
+  store/
+    migrations/             # embedded SQL migrations (go:embed *.sql)
+    postgres/               # pgx/v5 pool: users, rooms, messages, read_state,
+                            # room_members
+  httpapi/                  # chi router, handlers, CORS, OpenAPI builder
+  server/                   # http.Server wrapper with graceful shutdown
+web/                        # React + TS PWA client (separate pnpm project)
+  src/
+    api/                    # openapi-fetch client + generated schema.ts
+    store/auth.ts           # Zustand auth store (JWT in localStorage)
+    ws/                     # ChatSocket wrapper + useChatRoom hook
+    components/             # Layout, MessageList, MessageInput, ProtectedRoute
+    features/               # auth/, rooms/, chat/ page components
+    lib/                    # format helpers
+docs/
+  CLIENT_NEXT_STEPS.md      # roadmap: push, calls, group calls, SFU
+```
+
 ## Architecture rules that matter for edits
 
 - **Layered, dependency flows inward.** `cmd/*` wires `internal/` packages;
@@ -90,6 +124,160 @@ gotcha below.
   in `router.go` has a matching operation there. **When you add or change a
   route, update `openapi.go` too** (flagged in a code comment). Run
   `make openapi` to regenerate the on-disk copy.
+- **Room roles are moderation-only.** The `room_members` table records per-room
+  ownership (`owner`/`member`) but does **not** gate visibility or posting —
+  all authenticated users still see all rooms and can post. Ownership only
+  grants delete/clear/member-management powers. Global admins override owners.
+  The check is `canManageRoom(ctx, store, roomID, claims)` in
+  `room_member_handlers.go`. Room deletion/clearing moved OUT of the
+  admin-only route group into the authenticated group so non-admin owners can
+  use them; ownership is enforced in the handler.
+- **WebSocket protocol has several message types beyond `message`/`ping`.**
+  `ClientMsg.Type` also includes `"typing"`, `"read"`, `"edit"`.
+  `ServerMsg.Type` includes `"typing"`, `"presence"`, `"read_receipt"`,
+  `"message_edited"`. Ephemeral events (typing/read/presence/edit) carry
+  `user_id`/`username`/`room_id` at the envelope level so clients can filter
+  by room without a nested `*Message`. **Presence is global** (no real
+  room_id; delivered via a sentinel `uuid.Nil` room that the v1 broadcast-to-all
+  rule fans out to everyone). Typing is **debounced server-side by state** —
+  only rebroadcast on a real idle↔typing change, to avoid flooding the 256-deep
+  outbox and triggering slow-consumer disconnects.
+- **Hub has a user-id index for presence.** `hub.Hub` maintains
+  `map[uuid.UUID]map[Client]struct{}` alongside the client set; `OnlineUsers()`
+  returns a deduplicated snapshot. The `Client` interface requires
+  `UserID()` + `Username()` + `Send()`. Presence is emitted by the WS handler
+  on connect/disconnect, not by the hub — the hub stays a dumb relay.
+
+## Key interfaces and injection points
+
+- **`hub.Client`** (`internal/hub/hub.go`): `UserID() uuid.UUID`,
+  `Username() string`, `Send(models.ServerMsg)`. Implemented by the
+  **unexported `ws.client`**. `Send` is non-blocking: drops the client (async
+  `close()`) if the 256-buffered outbox is full; recovers from
+  send-on-closed-channel panics.
+- **`ws.MessageStore`** (`internal/ws/handler.go`) — the store surface the WS
+  layer depends on, decoupling `ws` from `postgres`:
+  `CreateMessage`, `UpdateMessage`, `UpdateMessageAsAdmin`, `GetRoomByID`,
+  `UpsertReadState`, `ReadReceipts`. Implemented by `*postgres.Store`;
+  `ws.New` accepts this interface.
+- **`auth.UserChecker`** (`internal/auth/middleware.go`):
+  `func(ctx, userID uuid.UUID) (disabled bool, err error)`. Injected via
+  `Service.SetUserChecker`; default `noOpChecker` (nobody disabled). In
+  `cmd/server/main.go` it is wired to `store.GetUserByID` → returns
+  `u.Disabled`. This is the **block-takes-immediate-effect** mechanism:
+  `Authenticate` (used by both REST `RequireAuth` and the WS handshake)
+  consults the checker on every request.
+- **`httpapi.Deps`** — struct-based DI bundling `*postgres.Store`,
+  `*auth.Service`, `*ws.Handler`, `CORSOrigin string`. Handlers use finer-
+  grained per-group dep structs (`AuthDeps`, `RoomDeps`, `AdminDeps`,
+  `RoomMemberDeps`), each embedding just the store (and AuthDeps adds
+  `*auth.Service`).
+- **Ownership/permission** is enforced in-handler via
+  `canManageRoom(ctx, store, roomID, claims)` (admin or room owner) rather
+  than via middleware.
+
+## Database schema
+
+Five tables across migrations 0001–0004. `CREATE EXTENSION pgcrypto` is in
+0001 for `gen_random_uuid()`. FK rules worth noting: `messages` rows cascade
+on room/user delete; `rooms.created_by` is **ON DELETE RESTRICT** (a user who
+created rooms can't be deleted until those rooms are removed).
+
+| Table | Key columns | Notes |
+|---|---|---|
+| `users` | `id` uuid PK, `username` UNIQUE, `password_hash`, `role` CHECK('admin','user'), `disabled` bool, timestamps | accounts are admin-created; no self-registration |
+| `rooms` | `id` uuid PK, `name` UNIQUE, `description`, `created_by` → users (RESTRICT), `created_at` | |
+| `messages` | `id` uuid PK, `room_id` → rooms (CASCADE), `user_id` → users (CASCADE), `content`, `created_at`, `edited_at` (nullable) | index `(room_id, created_at DESC)` for newest-first pagination |
+| `message_read_state` | PK `(room_id, user_id)`, `last_read_at` | per-room read cursor; both FKs CASCADE |
+| `room_members` | PK `(room_id, user_id)`, `role` CHECK('owner','member'), `joined_at` | moderation-only; both FKs CASCADE. 0004 backfills existing rooms' creators as owners. |
+
+Sentinel errors: `postgres.ErrNotFound` (→ 404), `postgres.ErrForbidden`
+(→ 403, used by `UpdateMessage` when a non-author edits).
+
+## REST routes
+
+Global middleware: `RequestID`, `RealIP`, `Recoverer`, then `cors(...)` (runs
+**before** auth so preflight OPTIONS succeeds). All API routes under
+`/api/v1`.
+
+```
+POST   /login                                    (public)              Login
+GET    /ws                                       (public; ?token= auth) WS.ServeHTTP
+
+  [ RequireAuth ]
+  GET    /me
+  GET    /rooms
+  GET    /rooms/{id}/messages   ?limit&before
+  DELETE /api/v1/rooms/{id}                     (owner-or-admin)       DeleteRoom
+  POST   /api/v1/rooms/{id}/clear               (owner-or-admin)       ClearRoom
+  GET    /rooms/{id}/members                                            ListMembers
+  POST   /rooms/{id}/members                    (owner-or-admin)       AddMember
+  DELETE /rooms/{id}/members/{userId}           (owner-or-admin)       RemoveMember
+
+      [ RequireAuth + RequireAdmin ]
+      POST   /rooms                                                    CreateRoom
+      POST   /admin/users                                              CreateUser
+      GET    /admin/users                                              ListUsers
+      DELETE /admin/users/{id}                                         DeleteUser
+      POST   /admin/users/{id}/block                                   BlockUser
+      POST   /admin/users/{id}/unblock                                 UnblockUser
+
+GET    /healthz  /openapi.json  /openapi.yaml  /docs  (public)
+```
+
+Pagination: `GET /rooms/{id}/messages` takes `limit` (1–100, default 50) and
+`before` (RFC 3339 timestamp cursor, exclusive — returns messages older than
+it). Results are **newest-first**.
+
+## WebSocket protocol
+
+Connect: `GET /api/v1/ws?token=<jwt>` (JWT as query param; browser WS can't set
+headers). Server pings every ~54s (expects pong within 60s). Messages are
+JSON envelopes keyed on `type`. **The server broadcasts to ALL connected
+clients; the client filters by `room_id` locally.** Presence is global.
+
+**Client → server** (`ClientMsg`):
+
+| `type` | Fields | Server action |
+|---|---|---|
+| `message` | `room_id`, `content` | persist + broadcast `"message"` |
+| `edit` | `message_id`, `room_id`, `content` | author-or-admin edit → `"message_edited"` |
+| `typing` | `room_id`, `is_typing` | state-debounced broadcast `"typing"` |
+| `read` | `room_id` | upsert read cursor → broadcast `"read_receipt"` |
+| `ping` | — | reply `"pong"` (client-local) |
+
+**Server → client** (`ServerMsg`):
+
+| `type` | Fields |
+|---|---|
+| `message` | `message` (full row incl. `edited_at`) |
+| `message_edited` | `message`, `message_id` |
+| `typing` | `room_id`, `user_id`, `username`, `is_typing` |
+| `presence` | `user_id`, `username`, `is_online`, `online_users` (snapshot on connect) |
+| `read_receipt` | `room_id`, `read_by` (array of `{user_id, username, last_read_at}`) |
+| `pong` | `text` |
+| `error` | `message_id`, `text` (client-local, not broadcast) |
+
+The envelope carries `room_id`/`user_id`/`username` at top level on ephemeral
+events so clients can filter by room without a nested `*Message`.
+
+## Config
+
+All settings from env vars (see `.env.example`):
+
+| Variable | Default | Notes |
+|---|---|---|
+| `SERVER_ADDR` | `:8080` | listen address |
+| `DATABASE_URL` | *(none)* | PostgreSQL connection string (**required**) |
+| `JWT_SECRET` | *(none)* | HMAC signing key (**required**; change in production) |
+| `JWT_TTL` | `24h` | token lifetime (`time.ParseDuration`) |
+| `ADMIN_USERNAME` | `admin` | bootstrap admin username |
+| `ADMIN_PASSWORD` | *(empty)* | empty → random password generated + logged once |
+| `LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error` |
+| `CORS_ORIGIN` | `*` | `*`, single origin, or comma-separated list |
+
+Web client: `VITE_API_URL` (default `http://localhost:8080`; leave empty in dev
+— Vite proxies `/api` to the backend).
 
 ## Conventions
 
@@ -142,7 +330,13 @@ gotcha below.
 - **`internal/auth`** — keep `UserChecker` injection; don't introduce a store
   import.
 - **`internal/httpapi/router.go`** — keep `/ws` outside `RequireAuth`; update
-  `openapi.go` for any route change.
+  `openapi.go` for any route change. Room delete/clear/member routes live in
+  the **authenticated** group (not admin-only) — ownership is enforced by
+  `canManageRoom` inside the handlers.
+- **`internal/ws/handler.go`** — the `Client` interface now needs
+  `Username()`; adding new WS message types means extending both
+  `models.ClientMsg`/`ServerMsg` and the `handle` switch, plus the web
+  client's `ServerMessage` union in `socket.ts` and `handleServerMessage`.
 - **`internal/store/migrations/`** — new file pair, never edit existing.
 - **Auth flow** — both REST and WS entry points share `Authenticate`; changes
   must be symmetric.

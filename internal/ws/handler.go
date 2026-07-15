@@ -16,6 +16,7 @@ import (
 	"github.com/pavelananev/dechat/internal/auth"
 	"github.com/pavelananev/dechat/internal/hub"
 	"github.com/pavelananev/dechat/internal/models"
+	"github.com/pavelananev/dechat/internal/store/postgres"
 )
 
 var upgrader = websocket.Upgrader{
@@ -34,23 +35,27 @@ const (
 	maxMessageSize = 16 * 1024 // 16 KiB; text messages in v1
 )
 
-// MessageSaver persists a message and returns the stored row. It is a thin
-// wrapper around *postgres.Store to keep this package testable.
-type MessageSaver interface {
+// MessageStore is the store surface the WS layer needs. It covers message
+// persistence + room/read-state lookups. *postgres.Store satisfies it.
+type MessageStore interface {
 	CreateMessage(ctx context.Context, roomID, userID uuid.UUID, username, content string) (models.Message, error)
+	UpdateMessage(ctx context.Context, messageID, userID uuid.UUID, username, content string) (models.Message, error)
+	UpdateMessageAsAdmin(ctx context.Context, messageID uuid.UUID, content string) (models.Message, error)
 	GetRoomByID(ctx context.Context, id uuid.UUID) (models.Room, error)
+	UpsertReadState(ctx context.Context, roomID, userID uuid.UUID) error
+	ReadReceipts(ctx context.Context, roomID uuid.UUID) ([]models.ReadReceipt, error)
 }
 
 // Handler is the HTTP handler for GET /api/v1/ws.
 type Handler struct {
 	hub   *hub.Hub
-	store MessageSaver
+	store MessageStore
 	auth  *auth.Service
 	log   *slog.Logger
 }
 
 // New creates a WS handler.
-func New(h *hub.Hub, store MessageSaver, authSvc *auth.Service, log *slog.Logger) *Handler {
+func New(h *hub.Hub, store MessageStore, authSvc *auth.Service, log *slog.Logger) *Handler {
 	return &Handler{hub: h, store: store, auth: authSvc, log: log}
 }
 
@@ -78,21 +83,47 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.hub.Register(c)
 	go c.writePump()
 	go c.readPump()
+
+	// Announce presence: tell everyone this user is online, and send the
+	// newcomer a snapshot of who else is connected so they can show it.
+	h.hub.Broadcast(nilRoom(), models.ServerMsg{
+		Type:     "presence",
+		UserID:   claims.UserID,
+		Username: claims.Username,
+		IsOnline: true,
+	})
+	c.Send(models.ServerMsg{
+		Type:        "presence",
+		UserID:      claims.UserID,
+		Username:    claims.Username,
+		IsOnline:    true,
+		OnlineUsers: h.hub.OnlineUsers(),
+	})
 }
+
+// nilRoom returns a non-empty room slice so Broadcast's "no rooms = nobody"
+// guard doesn't drop presence broadcasts. Presence is global, so we use a
+// sentinel zero room that the v1 "all users see all rooms" rule delivers to
+// everyone. (The contents are irrelevant under that rule.)
+func nilRoom() []uuid.UUID { return []uuid.UUID{uuid.Nil} }
 
 // client is a single WebSocket connection.
 type client struct {
 	conn    *websocket.Conn
 	hub     *hub.Hub
-	store   MessageSaver
+	store   MessageStore
 	auth    *auth.Service
 	claims  *auth.Claims
 	log     *slog.Logger
 	outbox  chan models.ServerMsg
 	closeMu sync.Once
+
+	// typing tracks whether THIS client is currently flagged as typing, so we
+	// only rebroadcast on state changes (debounce-by-state).
+	typing map[uuid.UUID]bool
 }
 
-func newClient(conn *websocket.Conn, h *hub.Hub, store MessageSaver, authSvc *auth.Service, claims *auth.Claims, log *slog.Logger) *client {
+func newClient(conn *websocket.Conn, h *hub.Hub, store MessageStore, authSvc *auth.Service, claims *auth.Claims, log *slog.Logger) *client {
 	return &client{
 		conn:   conn,
 		hub:    h,
@@ -101,10 +132,14 @@ func newClient(conn *websocket.Conn, h *hub.Hub, store MessageSaver, authSvc *au
 		claims: claims,
 		log:    log,
 		outbox: make(chan models.ServerMsg, sendChanSize),
+		typing: make(map[uuid.UUID]bool),
 	}
 }
 
 func (c *client) UserID() uuid.UUID { return c.claims.UserID }
+
+// Username satisfies the hub.Client interface; used for presence snapshots.
+func (c *client) Username() string { return c.claims.Username }
 
 // Send pushes a message to the write pump. If the buffer is full the client is
 // dropped — a slow consumer should not stall the hub.
@@ -126,6 +161,13 @@ func (c *client) close() {
 	c.closeMu.Do(func() {
 		c.hub.Unregister(c)
 		_ = c.conn.Close()
+		// Announce departure so others update their presence view.
+		c.hub.Broadcast(nilRoom(), models.ServerMsg{
+			Type:     "presence",
+			UserID:   c.claims.UserID,
+			Username: c.claims.Username,
+			IsOnline: false,
+		})
 	})
 }
 
@@ -163,6 +205,12 @@ func (c *client) handle(in models.ClientMsg) {
 		c.Send(models.ServerMsg{Type: "pong", Text: "pong"})
 	case "message":
 		c.handleMessage(in)
+	case "typing":
+		c.handleTyping(in)
+	case "read":
+		c.handleRead(in)
+	case "edit":
+		c.handleEdit(in)
 	default:
 		c.sendErr(uuid.Nil, "unknown message type")
 	}
@@ -194,6 +242,91 @@ func (c *client) handleMessage(in models.ClientMsg) {
 		[]uuid.UUID{in.RoomID},
 		models.ServerMsg{Type: "message", Message: &msg},
 	)
+}
+
+// handleTyping broadcasts a typing indicator, debounced by state: only emit on
+// a real change (idle→typing or typing→idle) to avoid flooding the outbox.
+func (c *client) handleTyping(in models.ClientMsg) {
+	if in.RoomID == uuid.Nil {
+		return
+	}
+	prev := c.typing[in.RoomID]
+	if prev == in.IsTyping {
+		return // no state change → suppress
+	}
+	c.typing[in.RoomID] = in.IsTyping
+	c.hub.Broadcast([]uuid.UUID{in.RoomID}, models.ServerMsg{
+		Type:     "typing",
+		RoomID:   in.RoomID,
+		UserID:   c.claims.UserID,
+		Username: c.claims.Username,
+		IsTyping: in.IsTyping,
+	})
+}
+
+// handleRead marks a room as read by this user, then broadcasts the room's
+// updated read receipts so senders can update their "read by N" indicators.
+func (c *client) handleRead(in models.ClientMsg) {
+	if in.RoomID == uuid.Nil {
+		return
+	}
+	if _, err := c.store.GetRoomByID(context.Background(), in.RoomID); err != nil {
+		c.sendErr(in.RoomID, "room not found")
+		return
+	}
+	if err := c.store.UpsertReadState(context.Background(), in.RoomID, c.claims.UserID); err != nil {
+		c.log.Error("upsert read state", "error", err, "user", c.claims.Username)
+		c.sendErr(in.RoomID, "failed to mark read")
+		return
+	}
+	receipts, err := c.store.ReadReceipts(context.Background(), in.RoomID)
+	if err != nil {
+		c.log.Error("read receipts", "error", err)
+		return
+	}
+	c.hub.Broadcast([]uuid.UUID{in.RoomID}, models.ServerMsg{
+		Type:   "read_receipt",
+		RoomID: in.RoomID,
+		ReadBy: receipts,
+	})
+}
+
+// handleEdit edits the caller's own message and broadcasts the updated row.
+// Only the author (or a global admin) may edit; room owners cannot edit
+// others' content (they moderate by clearing/deleting the room instead).
+func (c *client) handleEdit(in models.ClientMsg) {
+	if in.MessageID == uuid.Nil || in.Content == "" || in.RoomID == uuid.Nil {
+		c.sendErr(in.MessageID, "message_id, room_id and content are required")
+		return
+	}
+
+	var (
+		msg models.Message
+		err error
+	)
+	if c.claims.Role == string(models.RoleAdmin) {
+		// Admins edit without the ownership check.
+		msg, err = c.store.UpdateMessageAsAdmin(context.Background(), in.MessageID, in.Content)
+	} else {
+		msg, err = c.store.UpdateMessage(context.Background(), in.MessageID, c.claims.UserID, c.claims.Username, in.Content)
+	}
+	if err != nil {
+		switch {
+		case err == postgres.ErrForbidden:
+			c.sendErr(in.MessageID, "you can only edit your own messages")
+		case err == postgres.ErrNotFound:
+			c.sendErr(in.MessageID, "message not found")
+		default:
+			c.log.Error("update message", "error", err, "user", c.claims.Username)
+			c.sendErr(in.MessageID, "failed to edit message")
+		}
+		return
+	}
+	c.hub.Broadcast([]uuid.UUID{in.RoomID}, models.ServerMsg{
+		Type:      "message_edited",
+		Message:   &msg,
+		MessageID: msg.ID,
+	})
 }
 
 // sendErr pushes a client-local error; it is not broadcast to others.

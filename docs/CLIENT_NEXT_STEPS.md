@@ -49,8 +49,17 @@ These improve the base chat experience. All client-side.
       minimal — no raw HTML.
 - [ ] **Persisted "last active room".** Remember which room the user was in
       across reloads (Zustand `persist` middleware).
-- [ ] **Typing indicator (optional).** Requires a new WS message type — see
-      Phase 3's signaling pattern; small but a protocol change.
+- [x] **Typing indicator.** ✅ Done — WS `typing` message type, debounced
+      server-side, with auto-clear on the client.
+- [x] **Online status / presence.** ✅ Done — hub user-id index +
+      `presence` broadcasts on connect/disconnect + snapshot on connect.
+- [x] **Read receipts.** ✅ Done — per-(user, room) `last_read_at` cursor;
+      sender sees "Read by N" derived from it.
+- [x] **Edit message.** ✅ Done — WS `edit` message type; author-or-admin;
+      `edited_at` persisted; inline edit UI.
+- [x] **Room roles.** ✅ Done — `room_members` table (owner/member,
+      moderation-only); owner can delete/clear their room and manage members;
+      global admins override.
 
 ---
 

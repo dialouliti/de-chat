@@ -11,18 +11,39 @@ import (
 	"github.com/pavelananev/dechat/internal/models"
 )
 
-// CreateRoom inserts a new room. Returns the created row.
+// CreateRoom inserts a new room and records the creator as its owner in
+// room_members, in a single transaction. Returns the created room row.
 func (s *Store) CreateRoom(ctx context.Context, name, description string, createdBy uuid.UUID) (models.Room, error) {
-	const q = `
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return models.Room{}, fmt.Errorf("create room (begin): %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // safe to roll back after commit
+
+	const insertRoom = `
 		INSERT INTO rooms (name, description, created_by)
 		VALUES ($1, $2, $3)
 		RETURNING id, name, description, created_by, created_at`
 
 	var r models.Room
-	err := s.Pool.QueryRow(ctx, q, name, description, createdBy).
+	err = tx.QueryRow(ctx, insertRoom, name, description, createdBy).
 		Scan(&r.ID, &r.Name, &r.Description, &r.CreatedBy, &r.CreatedAt)
 	if err != nil {
 		return models.Room{}, fmt.Errorf("create room: %w", err)
+	}
+
+	// Record the creator as owner. ON CONFLICT keeps this idempotent if a row
+	// somehow already exists.
+	const insertOwner = `
+		INSERT INTO room_members (room_id, user_id, role)
+		VALUES ($1, $2, 'owner')
+		ON CONFLICT (room_id, user_id) DO NOTHING`
+	if _, err := tx.Exec(ctx, insertOwner, r.ID, createdBy); err != nil {
+		return models.Room{}, fmt.Errorf("create room owner: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return models.Room{}, fmt.Errorf("create room (commit): %w", err)
 	}
 	return r, nil
 }

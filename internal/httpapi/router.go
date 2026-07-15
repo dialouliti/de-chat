@@ -54,12 +54,22 @@ func New(d Deps) http.Handler {
 			r.Get("/rooms", RoomDeps{Store: d.Store}.ListRooms)
 			r.Get("/rooms/{id}/messages", RoomDeps{Store: d.Store}.ListMessages)
 
-			// Admin-only: room creation / deletion / clear.
+			// Room deletion / clearing are gated by ownership inside the
+			// handler (owner OR global admin), so they sit in the authenticated
+			// group rather than the admin-only group.
+			r.Delete("/rooms/{id}", AdminDeps{Store: d.Store}.DeleteRoom)
+			r.Post("/rooms/{id}/clear", AdminDeps{Store: d.Store}.ClearRoom)
+
+			// Room membership: list is open to any authenticated user; add /
+			// remove are owner-or-admin (checked in the handler).
+			r.Get("/rooms/{id}/members", RoomMemberDeps{Store: d.Store}.ListMembers)
+			r.Post("/rooms/{id}/members", RoomMemberDeps{Store: d.Store}.AddMember)
+			r.Delete("/rooms/{id}/members/{userId}", RoomMemberDeps{Store: d.Store}.RemoveMember)
+
+			// Admin-only: room creation + user administration.
 			r.Group(func(r chi.Router) {
 				r.Use(d.Auth.RequireAdmin)
 				r.Post("/rooms", AdminDeps{Store: d.Store}.CreateRoom)
-				r.Delete("/rooms/{id}", AdminDeps{Store: d.Store}.DeleteRoom)
-				r.Post("/rooms/{id}/clear", AdminDeps{Store: d.Store}.ClearRoom)
 
 				// User administration.
 				r.Route("/admin/users", func(r chi.Router) {

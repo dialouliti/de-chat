@@ -130,10 +130,21 @@ func (d AdminDeps) CreateRoom(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, room)
 }
 
-// DeleteRoom removes a room and its messages (admin only).
+// DeleteRoom removes a room and its messages. The room's owner or a global
+// admin may delete it. (Lives in the authenticated group; ownership is
+// enforced here rather than via the RequireAdmin middleware.)
 func (d AdminDeps) DeleteRoom(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseUUID(w, chi.URLParam(r, "id"))
 	if !ok {
+		return
+	}
+	claims, ok := auth.FromContext(r.Context())
+	if !ok {
+		jsonError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if !canManageRoom(r.Context(), d.Store, id, claims) {
+		jsonError(w, http.StatusForbidden, "only the room owner or an admin can delete this room")
 		return
 	}
 	if err := d.Store.DeleteRoom(r.Context(), id); err != nil {
@@ -147,10 +158,16 @@ func (d AdminDeps) DeleteRoom(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ClearRoom deletes all messages in a room, keeping the room itself (admin only).
+// ClearRoom deletes all messages in a room, keeping the room itself. The
+// room's owner or a global admin may clear it.
 func (d AdminDeps) ClearRoom(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseUUID(w, chi.URLParam(r, "id"))
 	if !ok {
+		return
+	}
+	claims, ok := auth.FromContext(r.Context())
+	if !ok {
+		jsonError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	if _, err := d.Store.GetRoomByID(r.Context(), id); err != nil {
@@ -159,6 +176,10 @@ func (d AdminDeps) ClearRoom(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		jsonError(w, http.StatusInternalServerError, "failed to find room")
+		return
+	}
+	if !canManageRoom(r.Context(), d.Store, id, claims) {
+		jsonError(w, http.StatusForbidden, "only the room owner or an admin can clear this room")
 		return
 	}
 	if err := d.Store.ClearRoom(r.Context(), id); err != nil {
