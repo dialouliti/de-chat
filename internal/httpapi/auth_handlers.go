@@ -41,6 +41,11 @@ func (d AuthDeps) Login(w http.ResponseWriter, r *http.Request) {
 	user, err := d.Store.GetUserByUsername(r.Context(), req.Username)
 	if err != nil {
 		if errors.Is(err, postgres.ErrNotFound) {
+			// Run a dummy bcrypt compare so this path takes roughly the same
+			// time as the real one below; otherwise the response-time gap
+			// would let an attacker enumerate valid usernames. The result is
+			// irrelevant and intentionally discarded.
+			_ = auth.DummyCompare(req.Password)
 			jsonError(w, http.StatusUnauthorized, "invalid username or password")
 			return
 		}

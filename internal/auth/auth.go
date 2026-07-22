@@ -82,6 +82,37 @@ func ComparePassword(hash, password string) error {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 }
 
+// dummyHash is a bcrypt hash generated once at init. It keeps the login
+// flow's timing independent of whether the requested username exists:
+// without it the not-found path returns immediately while the found path
+// runs bcrypt (~tens of ms), leaking valid usernames via response timing.
+// Generating it at init (rather than hardcoding a string) guarantees a
+// well-formed hash so CompareHashAndPassword performs real key-derivation
+// work rather than failing fast on a parse error.
+var dummyHash string
+
+func init() {
+	// The plaintext is irrelevant — any real login password will mismatch.
+	h, err := bcrypt.GenerateFromPassword([]byte("dechat-dummy-do-not-use"), bcrypt.DefaultCost)
+	if err != nil {
+		// GenerateFromPassword only fails on invalid cost; DefaultCost is
+		// always valid, so this is unreachable. Fall back to an empty hash
+		// rather than panicking on startup.
+		dummyHash = ""
+		return
+	}
+	dummyHash = string(h)
+}
+
+// DummyCompare runs a bcrypt comparison against a fixed hash whose result is
+// always a mismatch. It exists only to consume time equal to a real password
+// check on login paths where the user does not exist, closing the timing
+// oracle that would otherwise allow username enumeration. Its error is
+// intentionally ignored by callers.
+func DummyCompare(password string) error {
+	return bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(password))
+}
+
 // IssueToken creates a signed JWT for the given user that expires after ttl.
 func (s *Service) IssueToken(userID uuid.UUID, username, role string) (string, error) {
 	now := time.Now()

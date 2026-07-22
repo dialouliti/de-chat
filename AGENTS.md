@@ -269,7 +269,7 @@ All settings from env vars (see `.env.example`):
 |---|---|---|
 | `SERVER_ADDR` | `:8080` | listen address |
 | `DATABASE_URL` | *(none)* | PostgreSQL connection string (**required**) |
-| `JWT_SECRET` | *(none)* | HMAC signing key (**required**; change in production) |
+| `JWT_SECRET` | *(none)* | HMAC signing key (**required**, min 32 bytes; server refuses to boot on a weak/default value) |
 | `JWT_TTL` | `24h` | token lifetime (`time.ParseDuration`) |
 | `ADMIN_USERNAME` | `admin` | bootstrap admin username |
 | `ADMIN_PASSWORD` | *(empty)* | empty → random password generated + logged once |

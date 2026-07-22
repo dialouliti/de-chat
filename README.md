@@ -25,8 +25,11 @@ Designed so that future **calls / group calls** (WebRTC signaling) can reuse the
 
 ```bash
 cp .env.example .env
-# Edit .env: set a strong JWT_SECRET. Leave ADMIN_PASSWORD empty to have a
-# random one generated and logged on first startup.
+# Edit .env: set a strong JWT_SECRET (at least 32 bytes — e.g.
+#   openssl rand -base64 32
+# the server refuses to start with a shorter or default value). Leave
+# ADMIN_PASSWORD empty to have a random one generated and logged on first
+# startup.
 
 make docker-up          # builds app + starts postgres, runs migrations, boots app
 ```
@@ -57,7 +60,7 @@ All settings come from environment variables (see `.env.example`):
 |------------------|-------------|----------------------------------------------------|
 | `SERVER_ADDR`    | `:8080`     | Listen address                                     |
 | `DATABASE_URL`   | *(none)*    | PostgreSQL connection string (required)            |
-| `JWT_SECRET`     | *(none)*    | HMAC signing key (required; change in production)  |
+| `JWT_SECRET`     | *(none)*    | HMAC signing key (**required**, min 32 bytes; server refuses to boot on a weak/default value)  |
 | `JWT_TTL`        | `24h`       | Token lifetime                                     |
 | `ADMIN_USERNAME` | `admin`     | Bootstrap admin username                           |
 | `ADMIN_PASSWORD` | *(empty)*   | Bootstrap admin password; random if empty          |
@@ -350,3 +353,7 @@ rework:
   membership table only changes *who* is in which room set.
 - **Auto retention** — a scheduled job pruning messages older than N days is a
   straightforward addition; currently messages are kept forever.
+
+## License
+
+Licensed under the [MIT License](LICENSE).

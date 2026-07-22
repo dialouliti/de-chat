@@ -30,3 +30,6 @@ coverage.txt
 *.swp
 
 *.local
+
+# Agent tooling (local planning artifacts)
+.zcode/

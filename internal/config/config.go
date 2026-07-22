@@ -40,8 +40,20 @@ func Load() (Config, error) {
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")
 	}
-	if cfg.JWTSecret == "" {
-		return Config{}, fmt.Errorf("JWT_SECRET is required")
+	// The HMAC signing key must be strong enough to resist brute force. A
+	// short or default placeholder secret would let anyone forge admin JWTs,
+	// so refuse to boot rather than silently running insecure.
+	const minSecretLen = 32
+	if len(cfg.JWTSecret) < minSecretLen {
+		return Config{}, fmt.Errorf(
+			"JWT_SECRET must be at least %d bytes long (got %d); generate one with `openssl rand -base64 32`",
+			minSecretLen, len(cfg.JWTSecret),
+		)
+	}
+	if isKnownWeakSecret(cfg.JWTSecret) {
+		return Config{}, fmt.Errorf(
+			"JWT_SECRET is a known default/placeholder value; set a strong random secret (e.g. `openssl rand -base64 32`)",
+		)
 	}
 
 	ttl, err := time.ParseDuration(env("JWT_TTL", "24h"))
@@ -63,4 +75,17 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// knownWeakSecrets are default/placeholder values shipped in the example and
+// compose files. They are long enough to pass the length check but publicly
+// known, so they must never be used for real signing.
+var knownWeakSecrets = map[string]struct{}{
+	"change-me-to-a-long-random-string": {},
+}
+
+// isKnownWeakSecret reports whether the secret is a documented default.
+func isKnownWeakSecret(secret string) bool {
+	_, ok := knownWeakSecrets[strings.TrimSpace(secret)]
+	return ok
 }
