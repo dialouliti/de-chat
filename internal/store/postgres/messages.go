@@ -16,6 +16,10 @@ import (
 // lacks ownership/permission (e.g. editing another user's message).
 var ErrForbidden = errors.New("forbidden")
 
+// ErrAlreadyEdited is returned when an edit is attempted on a message that
+// has already been edited once. Messages may only be edited a single time.
+var ErrAlreadyEdited = errors.New("message already edited")
+
 // CreateMessage inserts a message and returns the fully-populated row
 // (including the denormalized sender username for broadcast).
 func (s *Store) CreateMessage(ctx context.Context, roomID, userID uuid.UUID, username, content string) (models.Message, error) {
@@ -39,13 +43,14 @@ func (s *Store) CreateMessage(ctx context.Context, roomID, userID uuid.UUID, use
 }
 
 // UpdateMessage edits a message owned by userID. Only the author may edit;
-// other callers get ErrForbidden, a missing message gets ErrNotFound.
+// other callers get ErrForbidden, a missing message gets ErrNotFound, and a
+// message that was already edited once gets ErrAlreadyEdited.
 // The denormalized username is passed back in via RETURNING to match
 // CreateMessage's shape for broadcast.
 func (s *Store) UpdateMessage(ctx context.Context, messageID, userID uuid.UUID, username, content string) (models.Message, error) {
 	const q = `
 		UPDATE messages SET content = $1, edited_at = now()
-		WHERE id = $2 AND user_id = $3
+		WHERE id = $2 AND user_id = $3 AND edited_at IS NULL
 		RETURNING id, room_id, user_id, $4::text AS username, content, created_at, edited_at`
 
 	var m models.Message
@@ -53,13 +58,9 @@ func (s *Store) UpdateMessage(ctx context.Context, messageID, userID uuid.UUID, 
 		Scan(&m.ID, &m.RoomID, &m.UserID, &m.Username, &m.Content, &m.CreatedAt, &m.EditedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// Distinguish "doesn't exist" from "exists but not yours" so the
-			// caller can return 404 vs 403. We probe to tell them apart.
-			exists, lookupErr := s.messageExists(ctx, messageID)
-			if lookupErr != nil || !exists {
-				return models.Message{}, ErrNotFound
-			}
-			return models.Message{}, ErrForbidden
+			// The row didn't match: it may not exist, may not belong to the
+			// caller, or may already have been edited. Probe to tell them apart.
+			return models.Message{}, s.classifyEditFailure(ctx, messageID)
 		}
 		return models.Message{}, fmt.Errorf("update message: %w", err)
 	}
@@ -76,12 +77,31 @@ func (s *Store) messageExists(ctx context.Context, id uuid.UUID) (bool, error) {
 	return ok, nil
 }
 
+// classifyEditFailure disambiguates a 0-row edit result into ErrNotFound,
+// ErrForbidden, or ErrAlreadyEdited. Shared by the author and admin paths so
+// clients get an accurate reason regardless of the caller's permissions.
+func (s *Store) classifyEditFailure(ctx context.Context, messageID uuid.UUID) error {
+	var editedAt *time.Time
+	err := s.Pool.QueryRow(ctx, `SELECT edited_at FROM messages WHERE id = $1`, messageID).Scan(&editedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("classify edit failure: %w", err)
+	}
+	if editedAt != nil {
+		return ErrAlreadyEdited
+	}
+	return ErrForbidden
+}
+
 // UpdateMessageAsAdmin edits a message regardless of authorship. Used by the
-// global-admin edit path. Returns ErrNotFound if the message does not exist.
+// global-admin edit path. Returns ErrNotFound if the message does not exist,
+// or ErrAlreadyEdited if it has already been edited once.
 func (s *Store) UpdateMessageAsAdmin(ctx context.Context, messageID uuid.UUID, content string) (models.Message, error) {
 	const q = `
 		UPDATE messages SET content = $1, edited_at = now()
-		WHERE id = $2
+		WHERE id = $2 AND edited_at IS NULL
 		RETURNING id, room_id, user_id,
 			(SELECT u.username FROM users u WHERE u.id = messages.user_id) AS username,
 			content, created_at, edited_at`
@@ -91,7 +111,7 @@ func (s *Store) UpdateMessageAsAdmin(ctx context.Context, messageID uuid.UUID, c
 		Scan(&m.ID, &m.RoomID, &m.UserID, &m.Username, &m.Content, &m.CreatedAt, &m.EditedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return models.Message{}, ErrNotFound
+			return models.Message{}, s.classifyEditFailure(ctx, messageID)
 		}
 		return models.Message{}, fmt.Errorf("update message as admin: %w", err)
 	}

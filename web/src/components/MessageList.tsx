@@ -69,7 +69,15 @@ export function MessageList({ messages, currentUsername, readReceipts, onEdit }:
                   {mine ? 'You' : m.username}
                 </span>
                 <span>{formatTime(m.created_at)}</span>
-                {m.edited_at && <span className="italic">(edited)</span>}
+                {m.edited_at && (
+                  <time
+                    dateTime={m.edited_at}
+                    title={`edited at ${formatTime(m.edited_at)}`}
+                    className="italic"
+                  >
+                    (edited)
+                  </time>
+                )}
               </div>
 
               {editing ? (
@@ -104,8 +112,9 @@ export function MessageList({ messages, currentUsername, readReceipts, onEdit }:
                 </div>
               )}
 
-              {/* Footer row: read receipt + edit affordance (own messages only). */}
-              {!editing && mine && (
+              {/* Footer row: read receipt + edit affordance (own messages only,
+                  and only if it hasn't been edited — messages can be edited once). */}
+              {!editing && mine && !m.edited_at && (
                 <div className="mt-0.5 flex items-center gap-2 px-1 text-xs text-slate-500">
                   {readBy > 0 && <span>Read by {readBy}</span>}
                   {onEdit && (

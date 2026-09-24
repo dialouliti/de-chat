@@ -316,6 +316,8 @@ func (c *client) handleEdit(in models.ClientMsg) {
 			c.sendErr(in.MessageID, "you can only edit your own messages")
 		case err == postgres.ErrNotFound:
 			c.sendErr(in.MessageID, "message not found")
+		case err == postgres.ErrAlreadyEdited:
+			c.sendErr(in.MessageID, "this message has already been edited")
 		default:
 			c.log.Error("update message", "error", err, "user", c.claims.Username)
 			c.sendErr(in.MessageID, "failed to edit message")

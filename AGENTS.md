@@ -192,7 +192,9 @@ created rooms can't be deleted until those rooms are removed).
 | `room_members` | PK `(room_id, user_id)`, `role` CHECK('owner','member'), `joined_at` | moderation-only; both FKs CASCADE. 0004 backfills existing rooms' creators as owners. |
 
 Sentinel errors: `postgres.ErrNotFound` (→ 404), `postgres.ErrForbidden`
-(→ 403, used by `UpdateMessage` when a non-author edits).
+(→ 403, used by `UpdateMessage` when a non-author edits), `postgres.ErrAlreadyEdited`
+(returned by both edit paths when a message has already been edited once —
+each message is editable a single time; enforced in SQL via `edited_at IS NULL`).
 
 ## REST routes
 
@@ -241,7 +243,7 @@ clients; the client filters by `room_id` locally.** Presence is global.
 | `type` | Fields | Server action |
 |---|---|---|
 | `message` | `room_id`, `content` | persist + broadcast `"message"` |
-| `edit` | `message_id`, `room_id`, `content` | author-or-admin edit → `"message_edited"` |
+| `edit` | `message_id`, `room_id`, `content` | author-or-admin edit (one-shot only — a second edit returns `error` "this message has already been edited") → `"message_edited"` |
 | `typing` | `room_id`, `is_typing` | state-debounced broadcast `"typing"` |
 | `read` | `room_id` | upsert read cursor → broadcast `"read_receipt"` |
 | `ping` | — | reply `"pong"` (client-local) |
