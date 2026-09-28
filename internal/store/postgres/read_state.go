@@ -54,3 +54,37 @@ func (s *Store) ReadReceipts(ctx context.Context, roomID uuid.UUID) ([]models.Re
 	}
 	return out, nil
 }
+
+// UnreadCounts returns, for every room that has any, the number of messages
+// authored by other users and created after the user's last-read cursor.
+// Rooms without a read-state row count every other user's message (no cursor
+// = nothing read yet). Rooms with nothing unread are omitted entirely.
+func (s *Store) UnreadCounts(ctx context.Context, userID uuid.UUID) ([]models.RoomUnread, error) {
+	const q = `
+		SELECT m.room_id, count(*)
+		FROM messages m
+		LEFT JOIN message_read_state r
+			ON r.room_id = m.room_id AND r.user_id = $1
+		WHERE m.user_id <> $1
+			AND m.created_at > COALESCE(r.last_read_at, '-infinity'::timestamptz)
+		GROUP BY m.room_id`
+
+	rows, err := s.Pool.Query(ctx, q, userID)
+	if err != nil {
+		return nil, fmt.Errorf("unread counts: %w", err)
+	}
+	defer rows.Close()
+
+	var out []models.RoomUnread
+	for rows.Next() {
+		var u models.RoomUnread
+		if err := rows.Scan(&u.RoomID, &u.UnreadCount); err != nil {
+			return nil, fmt.Errorf("scan unread count: %w", err)
+		}
+		out = append(out, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate unread counts: %w", err)
+	}
+	return out, nil
+}

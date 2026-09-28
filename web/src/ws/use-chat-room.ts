@@ -9,7 +9,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { apiClient } from '@/api/client'
-import { ChatSocket, type ServerMessage } from './socket'
+import { useAuth } from '@/store/auth'
+import { useUnread } from '@/store/unread'
+import { showNotification } from '@/lib/notifications'
+import { ChatSocket, type ReactionEntry, type ServerMessage } from './socket'
 
 export type ChatMessage = {
   id: string
@@ -19,6 +22,8 @@ export type ChatMessage = {
   content: string
   created_at: string
   edited_at?: string | null
+  /** Aggregated reactions from the history payload; may be absent. */
+  reactions?: ReactionEntry[]
 }
 
 export type ReadReceipt = {
@@ -34,6 +39,7 @@ export interface UseChatRoomResult {
   status: ConnectionStatus
   send: (content: string) => boolean
   edit: (messageId: string, content: string) => boolean
+  react: (messageId: string, emoji: string) => boolean
   sendTyping: (isTyping: boolean) => void
   markRead: () => void
   lastError: string | null
@@ -85,22 +91,74 @@ export function useChatRoom(roomId: string | null): UseChatRoomResult {
           setLastError(m.text ?? 'unknown error')
           return
 
-        case 'message':
-          if (m.message && activeRoomRef.current && m.message.room_id === activeRoomRef.current) {
+        case 'message': {
+          const msg = m.message
+          if (!msg) return
+          // Own messages never count as unread (matches the server, which
+          // excludes the caller's messages from GET /me/unread). Usernames
+          // are unique in deChat, so a username comparison identifies the
+          // author reliably.
+          const own = useAuth.getState().username === msg.username
+          if (!own && msg.room_id !== activeRoomRef.current) {
+            // Message for a room we're not looking at — bump its badge.
+            useUnread.getState().increment(msg.room_id)
+          }
+          // Desktop notification for other people's messages; the tab is
+          // most likely in the background, but showNotification re-checks
+          // document.hidden itself.
+          if (!own) showNotification(msg.username, msg.content)
+          if (activeRoomRef.current && msg.room_id === activeRoomRef.current) {
             setMessages((prev) => {
-              if (prev.some((p) => p.id === m.message!.id)) return prev
-              return [...prev, m.message as ChatMessage]
+              if (prev.some((p) => p.id === msg.id)) return prev
+              return [...prev, msg as ChatMessage]
             })
           }
           return
+        }
 
         case 'message_edited':
           if (m.message && activeRoomRef.current && m.message.room_id === activeRoomRef.current) {
             setMessages((prev) =>
-              prev.map((p) => (p.id === m.message!.id ? (m.message as ChatMessage) : p)),
+              prev.map((p) =>
+                p.id === m.message!.id
+                  ? // The edit response omits `reactions` (omitempty on the
+                    // server), so keep the locally known ones — edits don't
+                    // touch reactions.
+                    { ...(m.message as ChatMessage), reactions: m.message.reactions ?? p.reactions }
+                  : p,
+              ),
             )
           }
           return
+
+        case 'reaction': {
+          if (!activeRoomRef.current || m.room_id !== activeRoomRef.current) return
+          const entry: ReactionEntry = {
+            emoji: m.emoji,
+            user_id: m.user_id,
+            username: m.username,
+          }
+          setMessages((prev) =>
+            prev.map((p) => {
+              if (p.id !== m.message_id) return p
+              const has = (p.reactions ?? []).some(
+                (r) => r.emoji === entry.emoji && r.user_id === entry.user_id,
+              )
+              if (m.reaction_added) {
+                if (has) return p
+                return { ...p, reactions: [...(p.reactions ?? []), entry] }
+              }
+              if (!has) return p
+              return {
+                ...p,
+                reactions: (p.reactions ?? []).filter(
+                  (r) => !(r.emoji === entry.emoji && r.user_id === entry.user_id),
+                ),
+              }
+            }),
+          )
+          return
+        }
 
         case 'typing':
           if (activeRoomRef.current && m.room_id === activeRoomRef.current) {
@@ -168,6 +226,9 @@ export function useChatRoom(roomId: string | null): UseChatRoomResult {
       // Reset ephemeral state for the new room.
       setTypingUsers([])
       setReadReceipts([])
+      // Entering a room extinguishes its unread badge immediately; the
+      // server-side cursor follows via markRead once the socket is open.
+      useUnread.getState().clear(roomId)
     } else {
       setMessages([])
     }
@@ -208,6 +269,13 @@ export function useChatRoom(roomId: string | null): UseChatRoomResult {
     return socketRef.current?.sendEdit(room, messageId, content) ?? false
   }, [])
 
+  // Toggle an emoji reaction; the broadcast "reaction" event updates the list.
+  const react = useCallback((messageId: string, emoji: string): boolean => {
+    const room = activeRoomRef.current
+    if (!room) return false
+    return socketRef.current?.sendReaction(room, messageId, emoji) ?? false
+  }, [])
+
   const sendTyping = useCallback(
     (isTyping: boolean) => {
       const room = activeRoomRef.current
@@ -221,6 +289,9 @@ export function useChatRoom(roomId: string | null): UseChatRoomResult {
     const room = activeRoomRef.current
     if (!room) return
     socketRef.current?.sendRead(room)
+    // Zero the local badge right away; the server read cursor advances with
+    // the "read" frame above.
+    useUnread.getState().clear(room)
   }, [])
 
   return {
@@ -228,6 +299,7 @@ export function useChatRoom(roomId: string | null): UseChatRoomResult {
     status,
     send,
     edit,
+    react,
     sendTyping,
     markRead,
     lastError,

@@ -5,6 +5,7 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -41,6 +42,7 @@ type MessageStore interface {
 	CreateMessage(ctx context.Context, roomID, userID uuid.UUID, username, content string) (models.Message, error)
 	UpdateMessage(ctx context.Context, messageID, userID uuid.UUID, username, content string) (models.Message, error)
 	UpdateMessageAsAdmin(ctx context.Context, messageID uuid.UUID, content string) (models.Message, error)
+	ToggleReaction(ctx context.Context, messageID, roomID, userID uuid.UUID, emoji string) (bool, error)
 	GetRoomByID(ctx context.Context, id uuid.UUID) (models.Room, error)
 	UpsertReadState(ctx context.Context, roomID, userID uuid.UUID) error
 	ReadReceipts(ctx context.Context, roomID uuid.UUID) ([]models.ReadReceipt, error)
@@ -211,6 +213,8 @@ func (c *client) handle(in models.ClientMsg) {
 		c.handleRead(in)
 	case "edit":
 		c.handleEdit(in)
+	case "reaction":
+		c.handleReaction(in)
 	default:
 		c.sendErr(uuid.Nil, "unknown message type")
 	}
@@ -328,6 +332,41 @@ func (c *client) handleEdit(in models.ClientMsg) {
 		Type:      "message_edited",
 		Message:   &msg,
 		MessageID: msg.ID,
+	})
+}
+
+// handleReaction toggles the caller's emoji reaction on a message and
+// broadcasts the outcome to the room. ReactionAdded tells clients whether the
+// emoji was added (true) or removed (false).
+func (c *client) handleReaction(in models.ClientMsg) {
+	if in.MessageID == uuid.Nil || in.RoomID == uuid.Nil || in.Emoji == "" {
+		c.sendErr(in.MessageID, "message_id, room_id and emoji are required")
+		return
+	}
+
+	added, err := c.store.ToggleReaction(context.Background(), in.MessageID, in.RoomID, c.claims.UserID, in.Emoji)
+	if err != nil {
+		switch {
+		case err == postgres.ErrNotFound:
+			c.sendErr(in.MessageID, "message not found")
+		// errors.Is: the store wraps ErrInvalidEmoji with %w (details of the
+		// validation failure), so a plain == comparison would never match.
+		case errors.Is(err, postgres.ErrInvalidEmoji):
+			c.sendErr(in.MessageID, "invalid emoji")
+		default:
+			c.log.Error("toggle reaction", "error", err, "user", c.claims.Username)
+			c.sendErr(in.MessageID, "failed to toggle reaction")
+		}
+		return
+	}
+	c.hub.Broadcast([]uuid.UUID{in.RoomID}, models.ServerMsg{
+		Type:          "reaction",
+		RoomID:        in.RoomID,
+		MessageID:     in.MessageID,
+		UserID:        c.claims.UserID,
+		Username:      c.claims.Username,
+		Emoji:         in.Emoji,
+		ReactionAdded: added,
 	})
 }
 

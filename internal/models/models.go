@@ -47,13 +47,21 @@ type Room struct {
 
 // Message is a single chat message persisted in a room.
 type Message struct {
-	ID        uuid.UUID  `json:"id"`
-	RoomID    uuid.UUID  `json:"room_id"`
-	UserID    uuid.UUID  `json:"user_id"`
-	Username  string     `json:"username"` // denormalized sender display name
-	Content   string     `json:"content"`
-	CreatedAt time.Time  `json:"created_at"`
-	EditedAt  *time.Time `json:"edited_at,omitempty"` // nil until first edit
+	ID        uuid.UUID       `json:"id"`
+	RoomID    uuid.UUID       `json:"room_id"`
+	UserID    uuid.UUID       `json:"user_id"`
+	Username  string          `json:"username"` // denormalized sender display name
+	Content   string          `json:"content"`
+	CreatedAt time.Time       `json:"created_at"`
+	EditedAt  *time.Time      `json:"edited_at,omitempty"` // nil until first edit
+	Reactions []ReactionEntry `json:"reactions,omitempty"` // aggregated when loading history; live updates arrive as "reaction" events
+}
+
+// ReactionEntry is a single user's emoji reaction on a message.
+type ReactionEntry struct {
+	Emoji    string    `json:"emoji"`
+	UserID   uuid.UUID `json:"user_id"`
+	Username string    `json:"username"` // denormalized reactor display name
 }
 
 // ReadReceipt is a single user's last-read cursor for a room.
@@ -61,6 +69,14 @@ type ReadReceipt struct {
 	UserID     uuid.UUID `json:"user_id"`
 	Username   string    `json:"username"`
 	LastReadAt time.Time `json:"last_read_at"`
+}
+
+// RoomUnread is the number of unread messages in a single room: messages by
+// other users created after the user's last-read cursor (or all of them when
+// the user has no cursor yet).
+type RoomUnread struct {
+	RoomID      uuid.UUID `json:"room_id"`
+	UnreadCount int       `json:"unread_count"`
 }
 
 // RoomMember is a (room, user) membership row with a per-room role.
@@ -76,19 +92,20 @@ type RoomMember struct {
 
 // ClientMsg is a message sent by the client over the WebSocket.
 type ClientMsg struct {
-	Type     string    `json:"type"` // "message" | "ping" | "typing" | "read" | "edit"
-	RoomID   uuid.UUID `json:"room_id,omitempty"`
+	Type      string    `json:"type"` // "message" | "ping" | "typing" | "read" | "edit" | "reaction"
+	RoomID    uuid.UUID `json:"room_id,omitempty"`
 	MessageID uuid.UUID `json:"message_id,omitempty"`
-	Content  string    `json:"content,omitempty"`
-	IsTyping bool      `json:"is_typing,omitempty"` // for "typing"
+	Content   string    `json:"content,omitempty"`
+	Emoji     string    `json:"emoji,omitempty"`     // for "reaction"
+	IsTyping  bool      `json:"is_typing,omitempty"` // for "typing"
 }
 
 // ServerMsg is a message sent by the server over the WebSocket.
 type ServerMsg struct {
-	Type      string        `json:"type"` // "message" | "pong" | "error" | "typing" | "presence" | "read_receipt" | "message_edited"
-	Message   *Message      `json:"message,omitempty"`
-	MessageID uuid.UUID     `json:"message_id,omitempty"` // for "error" / "message_edited"
-	Text      string        `json:"text,omitempty"`       // for "pong"/"error"
+	Type      string    `json:"type"` // "message" | "pong" | "error" | "typing" | "presence" | "read_receipt" | "message_edited" | "reaction"
+	Message   *Message  `json:"message,omitempty"`
+	MessageID uuid.UUID `json:"message_id,omitempty"` // for "error" / "message_edited"
+	Text      string    `json:"text,omitempty"`       // for "pong"/"error"
 
 	// Actor + room scope for ephemeral events. Carried at the envelope level so
 	// clients can filter by room_id without a nested *Message.
@@ -97,10 +114,12 @@ type ServerMsg struct {
 	RoomID   uuid.UUID `json:"room_id,omitempty"`
 
 	// Event-specific flags.
-	IsTyping bool          `json:"is_typing,omitempty"` // "typing"
-	IsOnline bool          `json:"is_online,omitempty"` // "presence"
-	OnlineUsers []PresenceUser `json:"online_users,omitempty"` // presence snapshot sent to a newcomer
-	ReadBy   []ReadReceipt `json:"read_by,omitempty"`   // "read_receipt"
+	IsTyping      bool           `json:"is_typing,omitempty"`      // "typing"
+	IsOnline      bool           `json:"is_online,omitempty"`      // "presence"
+	OnlineUsers   []PresenceUser `json:"online_users,omitempty"`   // presence snapshot sent to a newcomer
+	ReadBy        []ReadReceipt  `json:"read_by,omitempty"`        // "read_receipt"
+	Emoji         string         `json:"emoji,omitempty"`          // "reaction"
+	ReactionAdded bool           `json:"reaction_added,omitempty"` // "reaction": true = inserted, false = removed
 }
 
 // PresenceUser is a lightweight {id, name} pair used in presence snapshots.

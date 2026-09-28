@@ -1,8 +1,10 @@
 # deChat web client
 
 A React + TypeScript PWA for the deChat backend. Login, room list, real-time
-chat over WebSocket, installable. This is the **base** client — calls, push,
-and admin UI come later (see `../docs/CLIENT_NEXT_STEPS.md`).
+chat over WebSocket — with presence, typing indicators, read receipts,
+message editing, emoji reactions, unread badges, and in-app notifications —
+installable. Calls, Web Push, and admin UI come later (see
+`../docs/CLIENT_NEXT_STEPS.md`).
 
 ## Stack
 
@@ -80,10 +82,12 @@ web/
 │   │   ├── rooms/        # RoomListPage
 │   │   └── chat/         # ChatRoomPage
 │   ├── store/auth.ts     # Zustand auth store (token in localStorage)
+│   ├── store/unread.ts   # Zustand unread counters (room badges, tab title)
 │   ├── ws/
 │   │   ├── socket.ts     # WebSocket wrapper (reconnect, heartbeat)
 │   │   └── use-chat-room.ts  # hook tying WS + REST history
 │   ├── lib/format.ts
+│   ├── lib/notifications.ts  # Notification API wrapper (hidden-tab alerts)
 │   ├── App.tsx           # routes
 │   └── main.tsx          # entry + providers
 ├── vite.config.ts        # Vite + PWA + dev proxy
@@ -109,6 +113,9 @@ on mobile or the install prompt on desktop to install it.
 
 ## What's not here yet
 
-This base client covers login, room list, and real-time chat. For the roadmap
-to push notifications, 1:1 calls, and group calls, see
+This base client covers login, room list, and real-time chat — plus presence,
+typing indicators, read receipts, message editing, emoji reactions, unread
+badges, and in-app notifications (hidden-tab alerts + unread tab title). For
+the roadmap to Web Push (notifications with the tab closed), 1:1 calls, and
+group calls, see
 [`../docs/CLIENT_NEXT_STEPS.md`](../docs/CLIENT_NEXT_STEPS.md).

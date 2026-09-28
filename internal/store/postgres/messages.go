@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -120,7 +121,8 @@ func (s *Store) UpdateMessageAsAdmin(ctx context.Context, messageID uuid.UUID, c
 
 // ListMessages returns up to limit messages in a room created before the given
 // cursor (exclusive), newest-first. Pass a zero-time cursor to fetch the most
-// recent messages. limit is clamped to [1, 100].
+// recent messages. limit is clamped to [1, 100]. Each message carries its
+// aggregated emoji reactions (m.Reactions), oldest reaction first.
 func (s *Store) ListMessages(ctx context.Context, roomID uuid.UUID, before time.Time, limit int) ([]models.Message, error) {
 	if limit < 1 {
 		limit = 1
@@ -130,9 +132,20 @@ func (s *Store) ListMessages(ctx context.Context, roomID uuid.UUID, before time.
 	}
 
 	const q = `
-		SELECT m.id, m.room_id, m.user_id, u.username, m.content, m.created_at, m.edited_at
+		SELECT m.id, m.room_id, m.user_id, u.username, m.content, m.created_at, m.edited_at,
+			COALESCE(react.aggregated, '[]'::json)
 		FROM messages m
 		JOIN users u ON u.id = m.user_id
+		LEFT JOIN LATERAL (
+			SELECT json_agg(json_build_object(
+				'emoji', r.emoji,
+				'user_id', r.user_id,
+				'username', ru.username
+			) ORDER BY r.created_at) AS aggregated
+			FROM message_reactions r
+			JOIN users ru ON ru.id = r.user_id
+			WHERE r.message_id = m.id
+		) react ON true
 		WHERE m.room_id = $1 AND ($2::timestamptz IS NULL OR m.created_at < $2)
 		ORDER BY m.created_at DESC
 		LIMIT $3`
@@ -146,8 +159,12 @@ func (s *Store) ListMessages(ctx context.Context, roomID uuid.UUID, before time.
 	msgs := make([]models.Message, 0, limit)
 	for rows.Next() {
 		var m models.Message
-		if err := rows.Scan(&m.ID, &m.RoomID, &m.UserID, &m.Username, &m.Content, &m.CreatedAt, &m.EditedAt); err != nil {
+		var reactions []byte
+		if err := rows.Scan(&m.ID, &m.RoomID, &m.UserID, &m.Username, &m.Content, &m.CreatedAt, &m.EditedAt, &reactions); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
+		}
+		if err := json.Unmarshal(reactions, &m.Reactions); err != nil {
+			return nil, fmt.Errorf("unmarshal reactions: %w", err)
 		}
 		msgs = append(msgs, m)
 	}

@@ -20,6 +20,10 @@ chat and administration.
 - **Typing indicators** — real-time "Alice is typing…"
 - **Read receipts** — sender sees "Read by N"
 - **Message editing** — edit your own messages (`edited_at` tracked)
+- **Emoji reactions** — toggle 👍 ❤️ … on any message (WS `reaction`;
+  history returns them aggregated per message)
+- **Unread counts** — per-room counts of other users' unread messages
+  (`GET /api/v1/me/unread`)
 - **Room roles** — per-room owner/member (moderation-only); owners can
   delete/clear their rooms and manage members
 
@@ -241,13 +245,14 @@ All endpoints are under `/api/v1`. Protected endpoints require
 |--------|-------------------|------|--------------------------------------|
 | POST   | `/login`          | no   | `{username, password}` → `{token, username, role}` |
 | GET    | `/me`             | yes  | Returns the caller's profile         |
+| GET    | `/me/unread`      | yes  | Unread counts per room: `[{room_id, unread_count}]`; only other users' messages newer than your read cursor count; rooms with zero unread are omitted (`[]` when nothing is unread) |
 
 ### Rooms & messages (any authenticated user)
 
 | Method | Path                              | Notes                                             |
 |--------|-----------------------------------|---------------------------------------------------|
 | GET    | `/rooms`                          | List all rooms                                    |
-| GET    | `/rooms/{id}/messages`            | Message history (newest-first), paginated         |
+| GET    | `/rooms/{id}/messages`            | Message history (newest-first), paginated; each message includes aggregated `reactions` (`[{emoji, user_id, username}]`, absent when none) |
 | GET    | `/rooms/{id}/members`             | List room members + roles                         |
 | DELETE | `/rooms/{id}`                     | Delete room (owner or admin)                      |
 | POST   | `/rooms/{id}/clear`               | Clear messages, keep room (owner or admin)        |
@@ -306,6 +311,13 @@ edited once** — a second edit attempt is rejected with an error:
 { "type": "edit", "room_id": "<uuid>", "message_id": "<uuid>", "content": "new text" }
 ```
 
+Toggle an emoji reaction on a message (re-sending the same emoji removes it;
+the emoji must be non-empty, ≤ 32 bytes, no control characters):
+
+```json
+{ "type": "reaction", "room_id": "<uuid>", "message_id": "<uuid>", "emoji": "👍" }
+```
+
 Typing indicator (debounced server-side — only emitted on a real state change):
 
 ```json
@@ -349,6 +361,13 @@ Edited message (broadcast with the updated row; `edited_at` is set):
 }
 ```
 
+Reaction toggled (broadcast to the room; `reaction_added` is `true` when the
+reaction was inserted, `false` when it was removed):
+
+```json
+{ "type": "reaction", "room_id": "<uuid>", "message_id": "<uuid>", "user_id": "<uuid>", "username": "alice", "emoji": "👍", "reaction_added": true }
+```
+
 Typing indicator (broadcast to the room):
 
 ```json
@@ -374,7 +393,8 @@ Pong reply:
 ```
 
 Client-local error (e.g. invalid payload, unknown room, editing another's
-message, or editing a message that has already been edited once):
+message, editing a message that has already been edited once, reacting to a
+missing message, or an invalid emoji):
 
 ```json
 { "type": "error", "message_id": "<uuid or nil>", "text": "room not found" }

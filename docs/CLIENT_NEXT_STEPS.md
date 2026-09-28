@@ -60,10 +60,25 @@ These improve the base chat experience. All client-side.
 - [x] **Room roles.** ✅ Done — `room_members` table (owner/member,
       moderation-only); owner can delete/clear their room and manage members;
       global admins override.
+- [x] **Emoji reactions.** ✅ Done — WS `reaction` toggle (per-user, per-emoji);
+      history returns aggregated per-message `reactions`; chip UI with count +
+      a quick-pick emoji palette.
+- [x] **Unread counters.** ✅ Done — `GET /api/v1/me/unread` + WS-driven
+      increments for background rooms; room-list badges (99+ format) and a
+      "(N) deChat" tab title.
+- [x] **In-app notifications.** ✅ Done — Notification API fires for incoming
+      messages while the tab is hidden (permission requested on first send,
+      not on load); tab title shows the unread count.
 
 ---
 
 ## Phase 2 — push notifications (small backend addition)
+
+> **Status split with Phase 1:** the in-app notification MVP is done (see the
+> ✅ above) — notifications for messages that arrive while the tab is open but
+> hidden, plus the unread tab title. What remains **in this phase** is Web
+> Push: service-worker-delivered notifications that work when the tab is
+> closed entirely.
 
 Web Push lets the PWA show notifications even when the tab is closed (on
 desktop; on iOS, only when added to home screen).

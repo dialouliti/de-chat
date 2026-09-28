@@ -5,6 +5,7 @@ import { Layout } from '@/components/Layout'
 import { MessageList } from '@/components/MessageList'
 import { MessageInput } from '@/components/MessageInput'
 import { useAuth } from '@/store/auth'
+import { requestNotificationPermission } from '@/lib/notifications'
 import { useChatRoom } from '@/ws/use-chat-room'
 
 export function ChatRoomPage() {
@@ -15,6 +16,7 @@ export function ChatRoomPage() {
     status,
     send,
     edit,
+    react,
     sendTyping,
     markRead,
     lastError,
@@ -82,6 +84,7 @@ export function ChatRoomPage() {
             currentUsername={username}
             readReceipts={readReceipts}
             onEdit={edit}
+            onReact={react}
           />
         </div>
 
@@ -92,7 +95,12 @@ export function ChatRoomPage() {
 
         {/* Composer */}
         <MessageInput
-          onSend={(content) => send(content)}
+          onSend={(content) => {
+            // Notification permission needs a user gesture — ask once, on
+            // the first message this session (no-op afterwards).
+            requestNotificationPermission()
+            send(content)
+          }}
           onTyping={sendTyping}
           disabled={status !== 'open'}
         />

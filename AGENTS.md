@@ -70,6 +70,7 @@ cmd/
 internal/
   config/                   # env-based config
   models/                   # User, Room, Message, RoomMember, ReadReceipt,
+                            # ReactionEntry, RoomUnread,
                             # WS envelope types (ClientMsg, ServerMsg, PresenceUser)
   auth/                     # JWT (HS256) + bcrypt; RequireAuth/RequireAdmin
   hub/                      # in-memory broadcast core + presence index
@@ -77,17 +78,18 @@ internal/
   store/
     migrations/             # embedded SQL migrations (go:embed *.sql)
     postgres/               # pgx/v5 pool: users, rooms, messages, read_state,
-                            # room_members
+                            # room_members, reactions
   httpapi/                  # chi router, handlers, CORS, OpenAPI builder
   server/                   # http.Server wrapper with graceful shutdown
 web/                        # React + TS PWA client (separate pnpm project)
   src/
     api/                    # openapi-fetch client + generated schema.ts
     store/auth.ts           # Zustand auth store (JWT in localStorage)
+    store/unread.ts         # Zustand unread counters (title badge "(N) deChat")
     ws/                     # ChatSocket wrapper + useChatRoom hook
     components/             # Layout, MessageList, MessageInput, ProtectedRoute
     features/               # auth/, rooms/, chat/ page components
-    lib/                    # format helpers
+    lib/                    # format helpers, browser notifications
 docs/
   CLIENT_NEXT_STEPS.md      # roadmap: push, calls, group calls, SFU
 ```
@@ -133,9 +135,10 @@ docs/
   admin-only route group into the authenticated group so non-admin owners can
   use them; ownership is enforced in the handler.
 - **WebSocket protocol has several message types beyond `message`/`ping`.**
-  `ClientMsg.Type` also includes `"typing"`, `"read"`, `"edit"`.
+  `ClientMsg.Type` also includes `"typing"`, `"read"`, `"edit"`, `"reaction"`.
   `ServerMsg.Type` includes `"typing"`, `"presence"`, `"read_receipt"`,
-  `"message_edited"`. Ephemeral events (typing/read/presence/edit) carry
+  `"message_edited"`, `"reaction"`. Ephemeral events
+  (typing/read/presence/edit/reaction) carry
   `user_id`/`username`/`room_id` at the envelope level so clients can filter
   by room without a nested `*Message`. **Presence is global** (no real
   room_id; delivered via a sentinel `uuid.Nil` room that the v1 broadcast-to-all
@@ -158,8 +161,8 @@ docs/
 - **`ws.MessageStore`** (`internal/ws/handler.go`) — the store surface the WS
   layer depends on, decoupling `ws` from `postgres`:
   `CreateMessage`, `UpdateMessage`, `UpdateMessageAsAdmin`, `GetRoomByID`,
-  `UpsertReadState`, `ReadReceipts`. Implemented by `*postgres.Store`;
-  `ws.New` accepts this interface.
+  `UpsertReadState`, `ReadReceipts`, `ToggleReaction`. Implemented by
+  `*postgres.Store`; `ws.New` accepts this interface.
 - **`auth.UserChecker`** (`internal/auth/middleware.go`):
   `func(ctx, userID uuid.UUID) (disabled bool, err error)`. Injected via
   `Service.SetUserChecker`; default `noOpChecker` (nobody disabled). In
@@ -178,7 +181,7 @@ docs/
 
 ## Database schema
 
-Five tables across migrations 0001–0004. `CREATE EXTENSION pgcrypto` is in
+Six tables across migrations 0001–0005. `CREATE EXTENSION pgcrypto` is in
 0001 for `gen_random_uuid()`. FK rules worth noting: `messages` rows cascade
 on room/user delete; `rooms.created_by` is **ON DELETE RESTRICT** (a user who
 created rooms can't be deleted until those rooms are removed).
@@ -190,11 +193,15 @@ created rooms can't be deleted until those rooms are removed).
 | `messages` | `id` uuid PK, `room_id` → rooms (CASCADE), `user_id` → users (CASCADE), `content`, `created_at`, `edited_at` (nullable) | index `(room_id, created_at DESC)` for newest-first pagination |
 | `message_read_state` | PK `(room_id, user_id)`, `last_read_at` | per-room read cursor; both FKs CASCADE |
 | `room_members` | PK `(room_id, user_id)`, `role` CHECK('owner','member'), `joined_at` | moderation-only; both FKs CASCADE. 0004 backfills existing rooms' creators as owners. |
+| `message_reactions` | PK `(message_id, user_id, emoji)`, `created_at` | one emoji reaction per (message, user, emoji); re-sending the same triple toggles it off (store's insert-or-delete); both FKs CASCADE. 0005. |
 
 Sentinel errors: `postgres.ErrNotFound` (→ 404), `postgres.ErrForbidden`
 (→ 403, used by `UpdateMessage` when a non-author edits), `postgres.ErrAlreadyEdited`
 (returned by both edit paths when a message has already been edited once —
-each message is editable a single time; enforced in SQL via `edited_at IS NULL`).
+each message is editable a single time; enforced in SQL via `edited_at IS NULL`),
+`postgres.ErrInvalidEmoji` (returned wrapped by `ToggleReaction` when the emoji
+is empty, longer than 32 bytes, or contains ASCII control characters →
+client-local WS `error` "invalid emoji").
 
 ## REST routes
 
@@ -208,6 +215,7 @@ GET    /ws                                       (public; ?token= auth) WS.Serve
 
   [ RequireAuth ]
   GET    /me
+  GET    /me/unread
   GET    /rooms
   GET    /rooms/{id}/messages   ?limit&before
   DELETE /api/v1/rooms/{id}                     (owner-or-admin)       DeleteRoom
@@ -229,7 +237,15 @@ GET    /healthz  /openapi.json  /openapi.yaml  /docs  (public)
 
 Pagination: `GET /rooms/{id}/messages` takes `limit` (1–100, default 50) and
 `before` (RFC 3339 timestamp cursor, exclusive — returns messages older than
-it). Results are **newest-first**.
+it). Results are **newest-first**. Each message carries an aggregated
+`reactions` array (`[{emoji, user_id, username}]`, ordered by reaction
+`created_at` ascending; the field is absent when a message has none — live
+updates arrive as WS `"reaction"` events instead).
+
+Unread counts: `GET /me/unread` returns `[{room_id, unread_count}]` — only
+other users' messages newer than the caller's `message_read_state` cursor
+(all of them when no cursor exists). Rooms with zero unread are omitted, so
+the response is `[]`, never `null`.
 
 ## WebSocket protocol
 
@@ -244,6 +260,7 @@ clients; the client filters by `room_id` locally.** Presence is global.
 |---|---|---|
 | `message` | `room_id`, `content` | persist + broadcast `"message"` |
 | `edit` | `message_id`, `room_id`, `content` | author-or-admin edit (one-shot only — a second edit returns `error` "this message has already been edited") → `"message_edited"` |
+| `reaction` | `message_id`, `room_id`, `emoji` | toggle the caller's reaction (insert if new, delete if the same triple exists) → broadcast `"reaction"` with `reaction_added` true/false |
 | `typing` | `room_id`, `is_typing` | state-debounced broadcast `"typing"` |
 | `read` | `room_id` | upsert read cursor → broadcast `"read_receipt"` |
 | `ping` | — | reply `"pong"` (client-local) |
@@ -253,7 +270,8 @@ clients; the client filters by `room_id` locally.** Presence is global.
 | `type` | Fields |
 |---|---|
 | `message` | `message` (full row incl. `edited_at`) |
-| `message_edited` | `message`, `message_id` |
+| `message_edited` | `message`, `message_id` (the payload does **not** carry `reactions` — clients keep locally known ones) |
+| `reaction` | `room_id`, `message_id`, `user_id`, `username`, `emoji`, `reaction_added` (true = inserted, false = removed) |
 | `typing` | `room_id`, `user_id`, `username`, `is_typing` |
 | `presence` | `user_id`, `username`, `is_online`, `online_users` (snapshot on connect) |
 | `read_receipt` | `room_id`, `read_by` (array of `{user_id, username, last_read_at}`) |

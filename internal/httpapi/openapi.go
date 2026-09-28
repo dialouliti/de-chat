@@ -52,6 +52,7 @@ func BuildSpec() (*openapi3.T, error) {
 	for _, e := range []schemaEntry{
 		{"User", models.User{}},
 		{"Room", models.Room{}},
+		{"ReactionEntry", models.ReactionEntry{}}, // nested in Message.reactions
 		{"Message", models.Message{}},
 		{"LoginRequest", loginRequest{}},
 		{"LoginResponse", loginResponse{}},
@@ -60,6 +61,7 @@ func BuildSpec() (*openapi3.T, error) {
 		{"AddMemberRequest", addMemberRequest{}},
 		{"RoomMember", models.RoomMember{}},
 		{"ReadReceipt", models.ReadReceipt{}},
+		{"RoomUnread", models.RoomUnread{}},
 		// WebSocket envelopes (documented in info.description, not as a path).
 		{"ClientMsg", models.ClientMsg{}},
 		{"ServerMsg", models.ServerMsg{}},
@@ -78,6 +80,14 @@ func BuildSpec() (*openapi3.T, error) {
 		// format:uuid} by walking the struct tags directly.
 		patchUUIDFields(e.v, schemas[e.name].Value)
 	}
+
+	// Message.reactions: openapi3gen inlines the []ReactionEntry items, and
+	// patchUUIDFields only walks top-level fields, so the nested user_id would
+	// be left as an empty {}. Point the array at the named ReactionEntry
+	// component (registered and uuid-patched above) instead.
+	reactionsArr := openapi3.NewArraySchema()
+	reactionsArr.Items = openapi3.NewSchemaRef("#/components/schemas/ReactionEntry", nil)
+	schemas["Message"].Value.Properties["reactions"] = &openapi3.SchemaRef{Value: reactionsArr}
 
 	// Shared building blocks --------------------------------------------------
 
@@ -191,6 +201,22 @@ func BuildSpec() (*openapi3.T, error) {
 						"username": openapi3.NewStringSchema(),
 						"role":     openapi3.NewStringSchema(),
 					}))}),
+				rr("401", errResp()),
+			),
+		},
+	})
+
+	// ---- Authed: GET /me/unread --------------------------------------------
+
+	paths.Set("/api/v1/me/unread", &openapi3.PathItem{
+		Get: &openapi3.Operation{
+			OperationID: "listMyUnreadCounts",
+			Tags:        []string{"rooms"},
+			Summary:     "Unread counts per room",
+			Description: "Returns, for every room that has any, the number of messages by other users created after the caller's last-read cursor. Rooms without a read cursor count every other user's message. Rooms with nothing unread are omitted, so the array may be empty.",
+			Security:    jwt(),
+			Responses: responses(
+				rr("200", listResp("OK", "RoomUnread")),
 				rr("401", errResp()),
 			),
 		},
@@ -571,6 +597,14 @@ which authenticates with the JWT passed as a ` + "`?token=`" + ` query parameter
 (browsers cannot set custom headers on the WS handshake). After connecting the
 client sends ` + "`ClientMsg`" + ` envelopes and receives ` + "`ServerMsg`" + `
 envelopes; both shapes are documented under components.schemas.
+
+**Emoji reactions** are toggled over the same socket: send a ` + "`ClientMsg`" + `
+of type ` + "`reaction`" + ` with ` + "`message_id`" + `, ` + "`room_id`" + ` and ` + "`emoji`" + `
+to add or remove the caller's reaction (the same triple sent twice removes
+it). The room is notified via a ` + "`ServerMsg`" + ` of type ` + "`reaction`" + ` whose
+` + "`reaction_added`" + ` flag tells clients whether the emoji was inserted or
+removed. Message history (GET /rooms/{id}/messages) returns each message's
+aggregated ` + "`reactions`" + ` array of ReactionEntry objects.
 
 There is **no open registration** — every account is created by an
 administrator. Messages are stored indefinitely; an admin can clear a room on

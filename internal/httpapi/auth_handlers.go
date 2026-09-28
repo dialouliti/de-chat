@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/pavelananev/dechat/internal/auth"
+	"github.com/pavelananev/dechat/internal/models"
 	"github.com/pavelananev/dechat/internal/store/postgres"
 )
 
@@ -89,4 +90,25 @@ func (d AuthDeps) Me(w http.ResponseWriter, r *http.Request) {
 		"username": claims.Username,
 		"role":     claims.Role,
 	})
+}
+
+// MeUnread returns the authenticated user's unread message count per room:
+// other users' messages created after the user's last-read cursor. Rooms with
+// nothing unread are omitted, so the response may be an empty array.
+func (d AuthDeps) MeUnread(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.FromContext(r.Context())
+	if !ok {
+		jsonError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	unread, err := d.Store.UnreadCounts(r.Context(), claims.UserID)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "failed to count unread messages")
+		return
+	}
+	if unread == nil {
+		unread = []models.RoomUnread{}
+	}
+	writeJSON(w, http.StatusOK, unread)
 }

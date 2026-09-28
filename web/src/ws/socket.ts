@@ -20,6 +20,15 @@ export interface MessagePayload {
   content: string
   created_at: string
   edited_at?: string | null
+  /** Aggregated reactions, present when the message has any (history only). */
+  reactions?: ReactionEntry[]
+}
+
+/** One user's emoji reaction on a message (see models.ReactionEntry). */
+export interface ReactionEntry {
+  emoji: string
+  user_id: string
+  username: string
 }
 
 export interface PresenceUser {
@@ -58,6 +67,15 @@ export type ServerMessage = {
   type: 'message_edited'
   message: MessagePayload
   message_id: string
+} | {
+  type: 'reaction'
+  room_id: string
+  message_id: string
+  user_id: string
+  username: string
+  emoji: string
+  /** true — the reaction was added, false — it was removed (toggle). */
+  reaction_added: boolean
 }
 
 export type ServerMessageHandler = (m: ServerMessage) => void
@@ -162,6 +180,11 @@ export class ChatSocket {
   /** Edit one of the caller's own messages. */
   sendEdit(roomId: string, messageId: string, content: string): boolean {
     return this.send({ type: 'edit', room_id: roomId, message_id: messageId, content })
+  }
+
+  /** Toggle an emoji reaction on a message; the same emoji sent twice removes it. */
+  sendReaction(roomId: string, messageId: string, emoji: string): boolean {
+    return this.send({ type: 'reaction', room_id: roomId, message_id: messageId, emoji })
   }
 
   close() {

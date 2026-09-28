@@ -49,6 +49,7 @@ func New(d Deps) http.Handler {
 			r.Use(d.Auth.RequireAuth)
 
 			r.Get("/me", AuthDeps{Store: d.Store, Auth: d.Auth}.Me)
+			r.Get("/me/unread", AuthDeps{Store: d.Store, Auth: d.Auth}.MeUnread)
 
 			// Room list + message history are available to any user.
 			r.Get("/rooms", RoomDeps{Store: d.Store}.ListRooms)
