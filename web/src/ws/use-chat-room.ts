@@ -196,6 +196,18 @@ export function useChatRoom(roomId: string | null): UseChatRoomResult {
             setReadReceipts(m.read_by)
           }
           return
+
+        // Call signalling (voice). Deliberately ignored here — the call UI
+        // arrives in a later task. The cases are explicit (rather than a
+        // silent fall-through past the switch) so this handler visibly
+        // acknowledges every member of the ServerMessage union in socket.ts;
+        // when the call UI lands, these are the hooks to fill in.
+        case 'call_join':
+        case 'call_leave':
+        case 'call_offer':
+        case 'call_answer':
+        case 'call_ice':
+          return
       }
     },
     [scheduleTypingClear],

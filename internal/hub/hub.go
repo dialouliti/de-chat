@@ -27,6 +27,7 @@ type Hub struct {
 	unregister chan Client
 	broadcast  chan broadcast
 	onlineReq  chan onlineQuery
+	sendUser   chan sendUserReq
 
 	log *slog.Logger
 }
@@ -43,6 +44,15 @@ type onlineQuery struct {
 	resp chan []models.PresenceUser
 }
 
+// sendUserReq is a synchronous request to deliver a message to every live
+// connection of one user. The number of connections the message was queued to
+// is sent back on resp (0 = the user is not online).
+type sendUserReq struct {
+	userID  uuid.UUID
+	message models.ServerMsg
+	resp    chan int
+}
+
 // New creates a Hub.
 func New(log *slog.Logger) *Hub {
 	return &Hub{
@@ -50,6 +60,7 @@ func New(log *slog.Logger) *Hub {
 		unregister: make(chan Client),
 		broadcast:  make(chan broadcast, 256),
 		onlineReq:  make(chan onlineQuery),
+		sendUser:   make(chan sendUserReq),
 		log:        log,
 	}
 }
@@ -74,6 +85,26 @@ func (h *Hub) Broadcast(rooms []uuid.UUID, message models.ServerMsg) {
 func (h *Hub) OnlineUsers() []models.PresenceUser {
 	resp := make(chan []models.PresenceUser, 1)
 	h.onlineReq <- onlineQuery{resp: resp}
+	return <-resp
+}
+
+// SendToUser delivers a message to every live connection of the given user (a
+// user may have several tabs open) and synchronously returns how many
+// connections the message was handed to; 0 means the user is not online. The
+// count reports connections seen, not confirmed deliveries: Client.Send is
+// fire-and-forget, so a slow consumer whose outbox is already full drops the
+// message (and is closed) per the app-wide policy yet is still counted.
+// Delivery happens in the run loop: sequential SendToUser calls reach the
+// user in order, and so do sequential Broadcasts (FIFO channel), but no
+// ordering is promised across the two paths — Broadcast's channel is
+// buffered, and when both cases are ready the run loop's select picks
+// randomly, so a broadcast queued earlier may fan out after a later
+// SendToUser. Blocks until the run loop answers; safe to call from any
+// goroutine. The hub stays a dumb relay: it knows nothing about the message
+// types it moves.
+func (h *Hub) SendToUser(userID uuid.UUID, message models.ServerMsg) int {
+	resp := make(chan int, 1)
+	h.sendUser <- sendUserReq{userID: userID, message: message, resp: resp}
 	return <-resp
 }
 
@@ -132,6 +163,20 @@ func (h *Hub) Run(ctxDone <-chan struct{}) {
 				out = append(out, models.PresenceUser{UserID: uid, Username: name})
 			}
 			q.resp <- out
+
+		case r := <-h.sendUser:
+			// Deliver to every live connection of the target user via the
+			// user-id index. A missing entry means the user is offline. Send
+			// is fire-and-forget: a slow consumer whose outbox is full drops
+			// the message instead of stalling this loop, so the count below
+			// reports connections handed the message, not confirmed
+			// deliveries.
+			n := 0
+			for c := range byUser[r.userID] {
+				c.Send(r.message)
+				n++
+			}
+			r.resp <- n
 		}
 	}
 }

@@ -76,6 +76,18 @@ export type ServerMessage = {
   emoji: string
   /** true — the reaction was added, false — it was removed (toggle). */
   reaction_added: boolean
+} | {
+  type: 'call_join' | 'call_leave'
+  room_id: string
+  user_id: string
+  username: string
+} | {
+  type: 'call_offer' | 'call_answer' | 'call_ice'
+  room_id: string
+  user_id: string
+  username: string
+  /** JSON-string SDP offer/answer or ICE candidate payload. */
+  content: string
 }
 
 export type ServerMessageHandler = (m: ServerMessage) => void
@@ -185,6 +197,34 @@ export class ChatSocket {
   /** Toggle an emoji reaction on a message; the same emoji sent twice removes it. */
   sendReaction(roomId: string, messageId: string, emoji: string): boolean {
     return this.send({ type: 'reaction', room_id: roomId, message_id: messageId, emoji })
+  }
+
+  /** Broadcast that the caller joined the room's voice call. */
+  sendCallJoin(roomId: string): boolean {
+    return this.send({ type: 'call_join', room_id: roomId })
+  }
+
+  /** Broadcast that the caller left the room's voice call. */
+  sendCallLeave(roomId: string): boolean {
+    return this.send({ type: 'call_leave', room_id: roomId })
+  }
+
+  /**
+   * Deliver an SDP offer to a specific peer (targeted, not room-broadcast).
+   * `content` is the JSON-string session description.
+   */
+  sendCallOffer(roomId: string, targetUserId: string, content: string): boolean {
+    return this.send({ type: 'call_offer', room_id: roomId, target_user_id: targetUserId, content })
+  }
+
+  /** Deliver an SDP answer to a specific peer (targeted, not room-broadcast). */
+  sendCallAnswer(roomId: string, targetUserId: string, content: string): boolean {
+    return this.send({ type: 'call_answer', room_id: roomId, target_user_id: targetUserId, content })
+  }
+
+  /** Deliver an ICE candidate to a specific peer (targeted, not room-broadcast). */
+  sendCallIce(roomId: string, targetUserId: string, content: string): boolean {
+    return this.send({ type: 'call_ice', room_id: roomId, target_user_id: targetUserId, content })
   }
 
   close() {

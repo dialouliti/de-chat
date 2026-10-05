@@ -92,17 +92,21 @@ type RoomMember struct {
 
 // ClientMsg is a message sent by the client over the WebSocket.
 type ClientMsg struct {
-	Type      string    `json:"type"` // "message" | "ping" | "typing" | "read" | "edit" | "reaction"
+	Type      string    `json:"type"` // "message" | "ping" | "typing" | "read" | "edit" | "reaction" | "call_join" | "call_leave" | "call_offer" | "call_answer" | "call_ice"
 	RoomID    uuid.UUID `json:"room_id,omitempty"`
 	MessageID uuid.UUID `json:"message_id,omitempty"`
-	Content   string    `json:"content,omitempty"`
+	Content   string    `json:"content,omitempty"`   // chat text; for call_offer/call_answer/call_ice a JSON-string SDP (offer/answer) or ICE candidate
 	Emoji     string    `json:"emoji,omitempty"`     // for "reaction"
 	IsTyping  bool      `json:"is_typing,omitempty"` // for "typing"
+
+	// TargetUserID is the recipient for the targeted call signalling types
+	// (call_offer/call_answer/call_ice); ignored by the broadcast ones.
+	TargetUserID uuid.UUID `json:"target_user_id,omitempty"`
 }
 
 // ServerMsg is a message sent by the server over the WebSocket.
 type ServerMsg struct {
-	Type      string    `json:"type"` // "message" | "pong" | "error" | "typing" | "presence" | "read_receipt" | "message_edited" | "reaction"
+	Type      string    `json:"type"` // "message" | "pong" | "error" | "typing" | "presence" | "read_receipt" | "message_edited" | "reaction" | "call_join" | "call_leave" | "call_offer" | "call_answer" | "call_ice"
 	Message   *Message  `json:"message,omitempty"`
 	MessageID uuid.UUID `json:"message_id,omitempty"` // for "error" / "message_edited"
 	Text      string    `json:"text,omitempty"`       // for "pong"/"error"
@@ -120,6 +124,11 @@ type ServerMsg struct {
 	ReadBy        []ReadReceipt  `json:"read_by,omitempty"`        // "read_receipt"
 	Emoji         string         `json:"emoji,omitempty"`          // "reaction"
 	ReactionAdded bool           `json:"reaction_added,omitempty"` // "reaction": true = inserted, false = removed
+
+	// Content carries the SDP/ICE payload for the targeted call signalling
+	// types (call_offer/call_answer/call_ice); the actor stays at the
+	// envelope's user_id/username.
+	Content string `json:"content,omitempty"`
 }
 
 // PresenceUser is a lightweight {id, name} pair used in presence snapshots.

@@ -606,6 +606,17 @@ it). The room is notified via a ` + "`ServerMsg`" + ` of type ` + "`reaction`" +
 removed. Message history (GET /rooms/{id}/messages) returns each message's
 aggregated ` + "`reactions`" + ` array of ReactionEntry objects.
 
+**Voice call signaling** (WebRTC peer-to-peer) rides the same socket:
+` + "`call_join`" + ` / ` + "`call_leave`" + ` are broadcast to the room
+(` + "`room_id`" + ` plus the sender's identity), while ` + "`call_offer`" + ` /
+` + "`call_answer`" + ` / ` + "`call_ice`" + ` are targeted — the client sends
+` + "`target_user_id`" + ` and ` + "`content`" + ` (a JSON-string SDP offer/answer
+or ICE candidate), and the server delivers a ` + "`ServerMsg`" + ` of the same
+type ONLY to that user's connections, substituting the sender's authenticated
+` + "`user_id`" + ` / ` + "`username`" + `. If the target is not online, offers and
+answers get a client-local ` + "`error`" + ` "user is not online", while ICE
+candidates are dropped silently.
+
 There is **no open registration** — every account is created by an
 administrator. Messages are stored indefinitely; an admin can clear a room on
 demand. In v1 every authenticated user can see every room.`

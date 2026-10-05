@@ -215,6 +215,16 @@ func (c *client) handle(in models.ClientMsg) {
 		c.handleEdit(in)
 	case "reaction":
 		c.handleReaction(in)
+	case "call_join":
+		c.handleCallJoin(in)
+	case "call_leave":
+		c.handleCallLeave(in)
+	case "call_offer":
+		c.handleCallSignal(in, "call_offer")
+	case "call_answer":
+		c.handleCallSignal(in, "call_answer")
+	case "call_ice":
+		c.handleCallSignal(in, "call_ice")
 	default:
 		c.sendErr(uuid.Nil, "unknown message type")
 	}
@@ -368,6 +378,77 @@ func (c *client) handleReaction(in models.ClientMsg) {
 		Emoji:         in.Emoji,
 		ReactionAdded: added,
 	})
+}
+
+// handleCallJoin broadcasts that the caller joined a voice call in the room.
+// The sender receives its own event too (same as typing indicators).
+func (c *client) handleCallJoin(in models.ClientMsg) {
+	c.broadcastCallEvent(in, "call_join")
+}
+
+// handleCallLeave broadcasts that the caller left a voice call in the room.
+func (c *client) handleCallLeave(in models.ClientMsg) {
+	c.broadcastCallEvent(in, "call_leave")
+}
+
+// broadcastCallEvent validates and broadcasts a room-scoped call event
+// (join/leave). It carries no payload beyond the actor identity.
+func (c *client) broadcastCallEvent(in models.ClientMsg, typ string) {
+	if in.RoomID == uuid.Nil {
+		c.sendErr(in.RoomID, "room_id is required")
+		return
+	}
+	if _, err := c.store.GetRoomByID(context.Background(), in.RoomID); err != nil {
+		c.sendErr(in.RoomID, "room not found")
+		return
+	}
+	c.hub.Broadcast([]uuid.UUID{in.RoomID}, models.ServerMsg{
+		Type:     typ,
+		RoomID:   in.RoomID,
+		UserID:   c.claims.UserID,
+		Username: c.claims.Username,
+	})
+}
+
+// handleCallSignal delivers a targeted WebRTC signalling payload
+// (call_offer/call_answer/call_ice) to the target user's connections only —
+// it is NOT broadcast to the room. Content carries a JSON-string SDP
+// offer/answer or an ICE candidate. The sender identity always comes from the
+// JWT claims; client-supplied identity fields are never trusted.
+func (c *client) handleCallSignal(in models.ClientMsg, typ string) {
+	if in.RoomID == uuid.Nil || in.TargetUserID == uuid.Nil || in.Content == "" {
+		c.sendErr(in.RoomID, "room_id, target_user_id and content are required")
+		return
+	}
+	if _, err := c.store.GetRoomByID(context.Background(), in.RoomID); err != nil {
+		c.sendErr(in.RoomID, "room not found")
+		return
+	}
+	if in.TargetUserID == c.claims.UserID {
+		c.sendErr(in.RoomID, "cannot call yourself")
+		return
+	}
+
+	n := c.hub.SendToUser(in.TargetUserID, models.ServerMsg{
+		Type:     typ,
+		RoomID:   in.RoomID,
+		UserID:   c.claims.UserID,
+		Username: c.claims.Username,
+		Content:  in.Content,
+	})
+	if n == 0 && typ != "call_ice" {
+		// Offer/answer are user-triggered, so a missing peer is worth an
+		// error. ICE candidates, in contrast, routinely arrive after the peer
+		// has already hung up — erroring on each would spam the client.
+		c.sendErr(uuid.Nil, "user is not online")
+		return
+	}
+	if n == 0 {
+		c.log.Debug("call_ice dropped: target user offline",
+			"user", c.claims.Username,
+			"target", in.TargetUserID,
+		)
+	}
 }
 
 // sendErr pushes a client-local error; it is not broadcast to others.
