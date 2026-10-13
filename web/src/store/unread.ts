@@ -2,8 +2,8 @@ import { create } from 'zustand'
 
 // Unread counters per room. Seeded from REST GET /api/v1/me/unread (rooms
 // with count > 0 only — the server omits the rest), then kept live by the
-// WebSocket stream in use-chat-room: messages in rooms the user isn't
-// looking at increment, opening a room clears.
+// app-level WebSocket stream in ws/socket-store: messages in rooms the user
+// isn't looking at increment, opening a room clears.
 //
 // The total is NOT stored — components derive it with selectUnreadTotal.
 

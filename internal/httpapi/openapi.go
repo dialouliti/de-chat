@@ -62,6 +62,8 @@ func BuildSpec() (*openapi3.T, error) {
 		{"RoomMember", models.RoomMember{}},
 		{"ReadReceipt", models.ReadReceipt{}},
 		{"RoomUnread", models.RoomUnread{}},
+		{"ICEServer", iceServer{}}, // nested in CallConfigResponse.ice_servers
+		{"CallConfigResponse", callConfigResponse{}},
 		// WebSocket envelopes (documented in info.description, not as a path).
 		{"ClientMsg", models.ClientMsg{}},
 		{"ServerMsg", models.ServerMsg{}},
@@ -88,6 +90,12 @@ func BuildSpec() (*openapi3.T, error) {
 	reactionsArr := openapi3.NewArraySchema()
 	reactionsArr.Items = openapi3.NewSchemaRef("#/components/schemas/ReactionEntry", nil)
 	schemas["Message"].Value.Properties["reactions"] = &openapi3.SchemaRef{Value: reactionsArr}
+
+	// CallConfigResponse.ice_servers: same treatment — point the array at the
+	// named ICEServer component instead of openapi3gen's inlined items.
+	iceServersArr := openapi3.NewArraySchema()
+	iceServersArr.Items = openapi3.NewSchemaRef("#/components/schemas/ICEServer", nil)
+	schemas["CallConfigResponse"].Value.Properties["ice_servers"] = &openapi3.SchemaRef{Value: iceServersArr}
 
 	// Shared building blocks --------------------------------------------------
 
@@ -222,6 +230,22 @@ func BuildSpec() (*openapi3.T, error) {
 		},
 	})
 
+	// ---- Authed: GET /call/config ------------------------------------------
+
+	paths.Set("/api/v1/call/config", &openapi3.PathItem{
+		Get: &openapi3.Operation{
+			OperationID: "getCallConfig",
+			Tags:        []string{"calls"},
+			Summary:     "WebRTC call configuration (ICE servers)",
+			Description: "Returns the ICE server list for WebRTC voice calls. A STUN entry is always present. When the server is configured with TURN (TURN_URLS + TURN_SECRET), a TURN entry is added carrying fresh short-lived credentials in coturn's REST API scheme: username is `\"<unix-expiry>:<caller-username>\"` and credential is base64(HMAC-SHA1(TURN_SECRET, username)). Credentials are regenerated on every request and are valid for ttl_seconds — clients must refetch before they expire, never cache them long-term.",
+			Security:    jwt(),
+			Responses: responses(
+				rr("200", refResp("OK", "CallConfigResponse")),
+				rr("401", errResp()),
+			),
+		},
+	})
+
 	// ---- Authed: rooms (list/create) ---------------------------------------
 
 	paths.Set("/api/v1/rooms", &openapi3.PathItem{
@@ -259,17 +283,21 @@ func BuildSpec() (*openapi3.T, error) {
 	beforeParam := &openapi3.ParameterRef{Value: openapi3.NewQueryParameter("before").
 		WithSchema(openapi3.NewDateTimeSchema()).
 		WithDescription("RFC 3339 timestamp cursor; return messages older than this.")}
+	afterParam := &openapi3.ParameterRef{Value: openapi3.NewQueryParameter("after").
+		WithSchema(openapi3.NewDateTimeSchema()).
+		WithDescription("RFC 3339 timestamp cursor; returns messages newer than this, oldest first (ascending); mutually exclusive with 'before'.")}
 
 	paths.Set("/api/v1/rooms/{id}/messages", &openapi3.PathItem{
 		Get: &openapi3.Operation{
 			Tags:        []string{"rooms", "messages"},
 			Summary:     "List room messages",
-			Description: "Returns a page of a room's message history, newest first. Because results are newest-first, fetch the next older page by passing the oldest message's created_at as `before`.",
+			Description: "Returns a page of a room's message history. With `before` (or no cursor) results are newest first; fetch the next older page by passing the oldest message's created_at as `before`. With `after` results are oldest first (ascending) — used to backfill messages missed during a WS reconnect. The two cursors are mutually exclusive.",
 			Security:    jwt(),
 			Parameters: openapi3.Parameters{
 				uuidPath("id", "Room ID"),
 				limitParam,
 				beforeParam,
+				afterParam,
 			},
 			Responses: responses(
 				rr("200", listResp("OK", "Message")),

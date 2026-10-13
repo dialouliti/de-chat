@@ -195,6 +195,10 @@ All settings come from environment variables (see `.env.example`):
 | `ADMIN_PASSWORD` | *(empty)*   | Bootstrap admin password; random if empty          |
 | `LOG_LEVEL`      | `info`      | `debug`/`info`/`warn`/`error`                      |
 | `CORS_ORIGIN`    | `*`         | Browser CORS: `*`, a single origin, or a list      |
+| `STUN_URLS`      | `stun:stun.l.google.com:19302` | Comma-separated STUN URLs, always served |
+| `TURN_URLS`      | *(empty)*   | Comma-separated TURN URLs; empty = TURN disabled   |
+| `TURN_SECRET`    | *(empty)*   | coturn shared secret for short-lived credentials (**required** when `TURN_URLS` is set; server refuses to boot otherwise) |
+| `TURN_TTL`       | `1h`        | Lifetime of generated TURN credentials             |
 
 ## OpenAPI spec
 
@@ -247,12 +251,18 @@ All endpoints are under `/api/v1`. Protected endpoints require
 | GET    | `/me`             | yes  | Returns the caller's profile         |
 | GET    | `/me/unread`      | yes  | Unread counts per room: `[{room_id, unread_count}]`; only other users' messages newer than your read cursor count; rooms with zero unread are omitted (`[]` when nothing is unread) |
 
+### Calls (WebRTC)
+
+| Method | Path           | Auth | Body / Notes                         |
+|--------|----------------|------|--------------------------------------|
+| GET    | `/call/config` | yes  | ICE servers for voice calls: `{ttl_seconds, ice_servers: [{urls, username?, credential?}]}`. A STUN entry is always present; a TURN entry is added only when `TURN_URLS` is configured, carrying fresh short-lived credentials (coturn REST API: username `"<unix-expiry>:<caller>"`, credential `base64(HMAC-SHA1(TURN_SECRET, username))`) regenerated on every request — refetch before `ttl_seconds` elapses, don't cache long-term |
+
 ### Rooms & messages (any authenticated user)
 
 | Method | Path                              | Notes                                             |
 |--------|-----------------------------------|---------------------------------------------------|
 | GET    | `/rooms`                          | List all rooms                                    |
-| GET    | `/rooms/{id}/messages`            | Message history (newest-first), paginated; each message includes aggregated `reactions` (`[{emoji, user_id, username}]`, absent when none) |
+| GET    | `/rooms/{id}/messages`            | Message history, paginated (`before` cursor or none: newest-first; `after` cursor: oldest first); each message includes aggregated `reactions` (`[{emoji, user_id, username}]`, absent when none) |
 | GET    | `/rooms/{id}/members`             | List room members + roles                         |
 | DELETE | `/rooms/{id}`                     | Delete room (owner or admin)                      |
 | POST   | `/rooms/{id}/clear`               | Clear messages, keep room (owner or admin)        |
@@ -262,7 +272,8 @@ All endpoints are under `/api/v1`. Protected endpoints require
 `/rooms/{id}/messages` query params:
 
 - `limit` — items per page (1–100, default 50)
-- `before` — RFC 3339 timestamp cursor; returns messages older than this
+- `before` — RFC 3339 timestamp cursor; returns messages older than this, newest first
+- `after` — RFC 3339 timestamp cursor; returns messages newer than this, oldest first (used to backfill after a WS reconnect); mutually exclusive with `before` (400)
 
 ### Admin only
 

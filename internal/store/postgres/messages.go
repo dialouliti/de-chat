@@ -174,6 +174,62 @@ func (s *Store) ListMessages(ctx context.Context, roomID uuid.UUID, before time.
 	return msgs, nil
 }
 
+// ListMessagesAfter returns up to limit messages in a room created after the
+// given cursor (exclusive), oldest-first — the ascending order clients need to
+// append a backfill page after a reconnect. Pass a zero-time cursor to fetch
+// from the beginning of the room. limit is clamped to [1, 100]. Each message
+// carries its aggregated emoji reactions (m.Reactions), oldest reaction first.
+func (s *Store) ListMessagesAfter(ctx context.Context, roomID uuid.UUID, after time.Time, limit int) ([]models.Message, error) {
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	const q = `
+		SELECT m.id, m.room_id, m.user_id, u.username, m.content, m.created_at, m.edited_at,
+			COALESCE(react.aggregated, '[]'::json)
+		FROM messages m
+		JOIN users u ON u.id = m.user_id
+		LEFT JOIN LATERAL (
+			SELECT json_agg(json_build_object(
+				'emoji', r.emoji,
+				'user_id', r.user_id,
+				'username', ru.username
+			) ORDER BY r.created_at) AS aggregated
+			FROM message_reactions r
+			JOIN users ru ON ru.id = r.user_id
+			WHERE r.message_id = m.id
+		) react ON true
+		WHERE m.room_id = $1 AND ($2::timestamptz IS NULL OR m.created_at > $2)
+		ORDER BY m.created_at ASC
+		LIMIT $3`
+
+	rows, err := s.Pool.Query(ctx, q, roomID, nullableTime(after), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list messages after: %w", err)
+	}
+	defer rows.Close()
+
+	msgs := make([]models.Message, 0, limit)
+	for rows.Next() {
+		var m models.Message
+		var reactions []byte
+		if err := rows.Scan(&m.ID, &m.RoomID, &m.UserID, &m.Username, &m.Content, &m.CreatedAt, &m.EditedAt, &reactions); err != nil {
+			return nil, fmt.Errorf("scan message: %w", err)
+		}
+		if err := json.Unmarshal(reactions, &m.Reactions); err != nil {
+			return nil, fmt.Errorf("unmarshal reactions: %w", err)
+		}
+		msgs = append(msgs, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate messages: %w", err)
+	}
+	return msgs, nil
+}
+
 // nullableTime returns nil for the zero time so the SQL `IS NULL OR` branch
 // matches "no cursor".
 func nullableTime(t time.Time) any {

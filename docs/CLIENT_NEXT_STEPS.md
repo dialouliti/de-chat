@@ -32,11 +32,9 @@ is the primary UI for non-admin users going forward.
 
 These improve the base chat experience. All client-side.
 
-- [ ] **Reconnect with backfill.** On WS reconnect, fetch any messages newer
-      than the last-seen `created_at` for the active room, so nothing is lost
-      during a dropped connection. The store's newest-first history + the
-      `before` cursor already support this; the client just needs to remember
-      the high-water mark per room.
+- [x] **Reconnect with backfill.** ✅ Done — `after` cursor on
+      `GET /rooms/{id}/messages` returns messages newer than the room's
+      high-water mark, oldest first; the client fetches it on WS reconnect.
 - [ ] **Optimistic send.** Show the user's own message immediately with a
       "sending" state, then reconcile when the broadcast arrives (match by
       content+timestamp, or by a client-generated temp id). Currently the

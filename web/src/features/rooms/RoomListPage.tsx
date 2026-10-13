@@ -28,7 +28,8 @@ function UnreadBadge({ count }: { count: number }) {
 
 export function RoomListPage() {
   // Live badge counts: seeded from the REST query below, then maintained by
-  // the WS-driven unread store (increments/clears happen in use-chat-room).
+  // the WS-driven unread store (increments/clears happen in the app-level
+  // socket-store, which stays connected on this page too).
   const counts = useUnread((s) => s.counts)
 
   // rooms are cached for 30s (query default) and refetched on focus-restore
@@ -43,10 +44,11 @@ export function RoomListPage() {
     },
   })
 
-  // Unread counters per room. No socket is open on this page, so the counts
-  // only refresh on mount — hence staleTime: 0 (vs the 30s app default), so
-  // returning here always refetches and rooms read since the last visit lose
-  // their badges instead of showing stale ones from cache. Failures are left
+  // Unread counters per room. The app-level socket keeps the live counts
+  // fresh, but this REST query remains the source of truth: hence
+  // staleTime: 0 (vs the 30s app default), so returning here always refetches
+  // and rooms read since the last visit (e.g. from another tab) lose their
+  // badges instead of showing stale ones from cache. Failures are left
   // silent: the room list itself is the primary content.
   useQuery({
     queryKey: ['me', 'unread'],

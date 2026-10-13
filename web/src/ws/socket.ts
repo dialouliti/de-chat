@@ -174,6 +174,13 @@ export class ChatSocket {
     return true
   }
 
+  /** True while the underlying connection is open — false mid-reconnect,
+   * exactly when send() would silently drop the frame. Callers gate
+   * user-visible actions (starting a call) on this. */
+  isOpen(): boolean {
+    return this.ws !== null && this.ws.readyState === WebSocket.OPEN
+  }
+
   /** Send a chat message. */
   sendMessage(roomId: string, content: string): boolean {
     return this.send({ type: 'message', room_id: roomId, content })

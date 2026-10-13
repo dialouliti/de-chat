@@ -216,8 +216,9 @@ GET    /ws                                       (public; ?token= auth) WS.Serve
   [ RequireAuth ]
   GET    /me
   GET    /me/unread
+  GET    /call/config                                                   CallConfig
   GET    /rooms
-  GET    /rooms/{id}/messages   ?limit&before
+  GET    /rooms/{id}/messages   ?limit&before&after
   DELETE /api/v1/rooms/{id}                     (owner-or-admin)       DeleteRoom
   POST   /api/v1/rooms/{id}/clear               (owner-or-admin)       ClearRoom
   GET    /rooms/{id}/members                                            ListMembers
@@ -236,16 +237,27 @@ GET    /healthz  /openapi.json  /openapi.yaml  /docs  (public)
 ```
 
 Pagination: `GET /rooms/{id}/messages` takes `limit` (1–100, default 50) and
-`before` (RFC 3339 timestamp cursor, exclusive — returns messages older than
-it). Results are **newest-first**. Each message carries an aggregated
-`reactions` array (`[{emoji, user_id, username}]`, ordered by reaction
-`created_at` ascending; the field is absent when a message has none — live
-updates arrive as WS `"reaction"` events instead).
+a single RFC 3339 timestamp cursor, exclusive: `before` returns messages older
+than it, **newest-first**; `after` returns messages newer than it,
+**oldest-first** (ascending — clients append a backfill page after a WS
+reconnect using the room's high-water mark). The two cursors are mutually
+exclusive (400). Each message carries an aggregated `reactions` array
+(`[{emoji, user_id, username}]`, ordered by reaction `created_at` ascending;
+the field is absent when a message has none — live updates arrive as WS
+`"reaction"` events instead).
 
 Unread counts: `GET /me/unread` returns `[{room_id, unread_count}]` — only
 other users' messages newer than the caller's `message_read_state` cursor
 (all of them when no cursor exists). Rooms with zero unread are omitted, so
 the response is `[]`, never `null`.
+
+Call config: `GET /call/config` returns `{ttl_seconds, ice_servers}` for
+WebRTC — a STUN entry always (from `STUN_URLS`) plus a TURN entry when
+`TURN_URLS` is set, carrying short-lived credentials in coturn's REST API
+scheme (`username = "<unix-expiry>:<caller>"`, `credential =
+base64(HMAC-SHA1(TURN_SECRET, username))`), regenerated per request in
+`call_handlers.go`. Config lives in `config.ICEConfig` and reaches the
+handler through `httpapi.Deps.ICE`.
 
 ## WebSocket protocol
 

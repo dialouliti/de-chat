@@ -7,6 +7,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/pavelananev/dechat/internal/auth"
+	"github.com/pavelananev/dechat/internal/config"
 	"github.com/pavelananev/dechat/internal/store/postgres"
 	"github.com/pavelananev/dechat/internal/ws"
 )
@@ -19,6 +20,8 @@ type Deps struct {
 	// CORSOrigin controls the Access-Control-Allow-Origin response header.
 	// "*", a single origin, or a comma-separated list. Empty defaults to "*".
 	CORSOrigin string
+	// ICE carries the WebRTC STUN/TURN settings served by GET /call/config.
+	ICE config.ICEConfig
 }
 
 // New builds the top-level http.Handler with all routes mounted under
@@ -50,6 +53,10 @@ func New(d Deps) http.Handler {
 
 			r.Get("/me", AuthDeps{Store: d.Store, Auth: d.Auth}.Me)
 			r.Get("/me/unread", AuthDeps{Store: d.Store, Auth: d.Auth}.MeUnread)
+
+			// WebRTC call config: STUN always; TURN with fresh short-lived
+			// credentials when the server is configured for it.
+			r.Get("/call/config", CallDeps{ICE: d.ICE}.CallConfig)
 
 			// Room list + message history are available to any user.
 			r.Get("/rooms", RoomDeps{Store: d.Store}.ListRooms)

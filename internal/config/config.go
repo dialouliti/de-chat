@@ -21,6 +21,20 @@ type Config struct {
 	// comma-separated list. Empty defaults to "*". The web client needs this
 	// when it is not served from the same origin as the API.
 	CORSOrigin string
+	// ICE carries the WebRTC STUN/TURN settings served to clients via
+	// GET /api/v1/call/config.
+	ICE ICEConfig
+}
+
+// ICEConfig holds the WebRTC ICE (STUN/TURN) server settings. STUN is always
+// served; TURN entries are added only when TURNURLs is non-empty, using
+// coturn's REST API short-lived credential scheme — only the shared secret
+// lives here, per-user credentials are derived per request by the handler.
+type ICEConfig struct {
+	STUNURLs   []string
+	TURNURLs   []string      // empty -> TURN is disabled
+	TURNSecret string        // required when TURNURLs is non-empty
+	TURNTTL    time.Duration // lifetime of generated TURN credentials
 }
 
 // Load reads configuration from the environment. Required values that are
@@ -62,6 +76,37 @@ func Load() (Config, error) {
 	}
 	cfg.JWTTTL = ttl
 
+	// --- WebRTC ICE (STUN/TURN) -------------------------------------------
+	stunURLs := splitCSV(env("STUN_URLS", defaultSTUNURLs))
+	if len(stunURLs) == 0 {
+		// STUN is always served; an explicitly empty list would break every
+		// call, so fall back to the default instead.
+		stunURLs = []string{defaultSTUNURLs}
+	}
+	turnTTL, err := time.ParseDuration(env("TURN_TTL", defaultTURNTTL))
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid TURN_TTL: %w", err)
+	}
+	turnSecret := env("TURN_SECRET", "")
+	turnURLs := splitCSV(env("TURN_URLS", ""))
+	if len(turnURLs) > 0 {
+		// TURN credentials are HMAC-signed with the shared secret, so a
+		// configured TURN server without a secret would hand out
+		// credentials coturn rejects; refuse to boot instead.
+		if turnSecret == "" {
+			return Config{}, fmt.Errorf("TURN_SECRET is required when TURN_URLS is set")
+		}
+		if turnTTL <= 0 {
+			return Config{}, fmt.Errorf("TURN_TTL must be positive when TURN_URLS is set (got %s)", turnTTL)
+		}
+	}
+	cfg.ICE = ICEConfig{
+		STUNURLs:   stunURLs,
+		TURNURLs:   turnURLs,
+		TURNSecret: turnSecret,
+		TURNTTL:    turnTTL,
+	}
+
 	if cfg.AdminUsername == "" {
 		return Config{}, fmt.Errorf("ADMIN_USERNAME must not be empty")
 	}
@@ -75,6 +120,29 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// Defaults for the WebRTC ICE settings.
+const (
+	defaultSTUNURLs = "stun:stun.l.google.com:19302"
+	defaultTURNTTL  = "1h"
+)
+
+// splitCSV splits a comma-separated env value into trimmed, non-empty items.
+// Whitespace around entries is tolerated ("a, b" -> ["a", "b"]); an empty
+// value yields a nil slice.
+func splitCSV(v string) []string {
+	if v == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // knownWeakSecrets are default/placeholder values shipped in the example and

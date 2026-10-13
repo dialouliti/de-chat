@@ -76,6 +76,7 @@ func main() {
 		Auth:       authSvc,
 		WS:         wsHandler,
 		CORSOrigin: cfg.CORSOrigin,
+		ICE:        cfg.ICE,
 	})
 
 	srv := server.New(cfg.ServerAddr, handler, log.With("component", "server"))
