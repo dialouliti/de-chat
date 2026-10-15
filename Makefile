@@ -46,7 +46,7 @@ test: ## Run tests
 fmt: ## Format the code
 	$(GO) fmt ./...
 
-docker-up: ## Build and start the full stack (app + postgres) via docker compose
+docker-up: ## Build and start the full stack (db + app + web/Caddy) via docker compose
 	docker compose up --build
 
 docker-down: ## Stop and remove containers

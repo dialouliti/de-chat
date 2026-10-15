@@ -50,8 +50,8 @@ make tidy
 
 ### Web PWA client (`web/`)
 
-- **Node 20+** (Node 24 used in development)
-- **pnpm 9+**
+- **Node 22.13+** (Node 24 used in development and in the Docker image)
+- **pnpm 10.5+** (pnpm 11.x used in development and in the Docker image)
 
 ```bash
 cd web
@@ -74,12 +74,27 @@ cp .env.example .env
 # ADMIN_PASSWORD empty to have a random one generated and logged on first
 # startup.
 
-make docker-up          # builds app + starts postgres, runs migrations, boots app
+make docker-up          # builds db + app + web, runs migrations, boots the stack
 ```
 
 On first boot the logs print the bootstrap admin credentials (if
-`ADMIN_PASSWORD` was empty) — save them. The API is then available on
-`http://localhost:8080`.
+`ADMIN_PASSWORD` was empty) — save them. The stack then serves:
+
+- **https://localhost** — the Caddy edge (`web` service): the PWA, the REST
+  API, and the WebSocket (`wss://…/api/v1/ws`) on one origin. For
+  `localhost` the certificate is self-signed (Caddy's internal CA), so
+  expect a one-time browser warning and use `curl -k`. The WebSocket
+  upgrade rides HTTP/1.1 — exactly what the browser WebSocket API uses;
+  clients forcing WebSocket over HTTP/2 (RFC 8441) get a 400, because
+  Caddy terminates h2/h3 and the classic RFC 6455 upgrade is
+  HTTP/1.1-only.
+- **http://127.0.0.1:8080** — the Go API directly, published on loopback
+  only (for debugging; bypasses TLS).
+
+For a public deployment set `DOMAIN` to your DNS name — ports 80/443 must
+be reachable from the internet, and Caddy obtains a Let's Encrypt
+certificate automatically. Optionally add an ACME email as a single
+`email you@example.com` line in the global block of the `Caddyfile`.
 
 Stop with `make docker-down`.
 
@@ -117,6 +132,11 @@ pnpm dev              # Vite dev server on http://localhost:5173
 
 If `pnpm build`/`pnpm dev` fails with esbuild missing, run
 `pnpm rebuild esbuild` (or `pnpm add -D @esbuild/<your-platform>`).
+
+A production build doesn't require any of this locally: the `web` service
+in `docker-compose.yml` builds the PWA inside its Docker image and serves it
+from the same origin as the API over HTTPS (`https://localhost`) — no
+`VITE_API_URL` needed. The dev flow above is unchanged.
 
 Other useful commands:
 
@@ -199,6 +219,7 @@ All settings come from environment variables (see `.env.example`):
 | `TURN_URLS`      | *(empty)*   | Comma-separated TURN URLs; empty = TURN disabled   |
 | `TURN_SECRET`    | *(empty)*   | coturn shared secret for short-lived credentials (**required** when `TURN_URLS` is set; server refuses to boot otherwise) |
 | `TURN_TTL`       | `1h`        | Lifetime of generated TURN credentials             |
+| `DOMAIN`         | `localhost` | Site name of the Caddy edge (web service); a real DNS name switches it to automatic Let's Encrypt |
 
 ## OpenAPI spec
 
@@ -429,8 +450,10 @@ internal/
   httpapi/              # REST handlers + chi router
   server/               # graceful HTTP server lifecycle
 web/                    # React + TS PWA client (separate pnpm project)
-Dockerfile              # multi-stage build
-docker-compose.yml      # app + postgres
+Dockerfile              # multi-stage build (targets: runtime = Go API, caddy = TLS edge + PWA)
+docker-compose.yml      # db + app + web (Caddy edge)
+Caddyfile               # HTTPS termination, API/WS proxy, PWA static serving
+.dockerignore           # keeps secrets and generated files out of the build context
 Makefile                # build/run/test/docker targets
 ```
 

@@ -32,7 +32,7 @@ make build          # server → bin/dechat
 make build-client   # → bin/dechat-client
 make build-admin    # → bin/dechat-admin
 make run            # go run ./cmd/server (reads .env)
-make docker-up      # full stack: app + postgres (the easiest way to run)
+make docker-up      # full stack: db + app + web/Caddy edge (easiest way to run)
 make docker-down
 make openapi        # writes ./openapi.json + ./openapi.yaml
 make vet            # go vet ./...
@@ -352,6 +352,16 @@ Web client: `VITE_API_URL` (default `http://localhost:8080`; leave empty in dev
   wired before the auth middleware so preflight OPTIONS requests aren't
   rejected. If you add a new browser-facing route, it inherits CORS
   automatically; if you change auth, keep CORS ahead of it.
+- **wss through Caddy is HTTP/1.1-only.** The classic RFC 6455 upgrade
+  exists only in HTTP/1.1; Caddy terminates client h2/h3, so a client
+  forcing WebSocket over HTTP/2 (RFC 8441) gets a 400. The browser
+  WebSocket API handshakes over h1 (the PWA works), and the console
+  clients bypass the edge entirely. Known limitation — don't "fix" it by
+  disabling h2/h3 globally.
+- **Dockerfile has two terminal targets.** `runtime` (the Go API — used by
+  the compose `app` service) and `caddy` (TLS edge + PWA — used by `web`).
+  `docker-compose.yml` pins `build.target` for both; a bare `docker build .`
+  without a target would build only the last stage (`caddy`).
 - **Web client build quirk (pnpm + esbuild).** pnpm v11 blocks esbuild's
   postinstall by default; `web/pnpm-workspace.yaml` allows it. If
   `pnpm build` fails with esbuild missing, run `pnpm rebuild esbuild` or

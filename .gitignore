@@ -22,6 +22,7 @@ coverage.txt
 # Environment
 .env
 .env.local
+.env.e2e
 
 # Editor / OS
 .idea/

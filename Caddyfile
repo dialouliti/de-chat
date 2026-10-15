@@ -1,0 +1,41 @@
+# Caddy edge for the docker-compose "web" service: terminates TLS, proxies
+# the Go API + WebSocket to app:8080, and serves the built PWA (web/dist is
+# copied to /srv in the Dockerfile) from the same origin.
+#
+# DOMAIN=localhost → self-signed certificate from Caddy's internal CA
+# (curl -k, one-time browser warning). A real DNS name → automatic
+# Let's Encrypt via HTTP-01/TLS-ALPN.
+
+{
+	# Optional: uncomment to receive ACME expiry notices from Let's Encrypt.
+	# email you@example.com
+}
+
+{$DOMAIN:localhost} {
+	# Backend: REST API, WebSocket (wss://…/api/v1/ws — reverse_proxy handles
+	# the Connection: Upgrade transparently), health and OpenAPI endpoints.
+	@backend path /api/* /healthz /openapi.json /openapi.yaml /docs /docs/
+	handle @backend {
+		reverse_proxy app:8080
+	}
+
+	# Everything else: the PWA static bundle with an SPA fallback.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+
+		# Compress compressible responses (JS/CSS bundles) when the client
+		# sends Accept-Encoding; zstd preferred, gzip as the fallback.
+		encode zstd gzip
+
+		# Hashed build artifacts never change — cache hard.
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /workbox-* Cache-Control "public, max-age=31536000, immutable"
+		# Everything else (index.html, sw.js, registerSW.js, manifest, icons)
+		# must revalidate so PWA auto-updates pick up new releases. The "?"
+		# prefix sets the header only if absent, so it never overwrites the
+		# immutable rules above regardless of directive ordering.
+		header ?Cache-Control "no-cache"
+	}
+}
