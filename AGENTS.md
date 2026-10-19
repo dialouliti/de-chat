@@ -31,8 +31,8 @@ The Makefile sets `CGO_ENABLED=0` and assumes `GOTOOLCHAIN=local`.
 make build          # server → bin/dechat
 make build-client   # → bin/dechat-client
 make build-admin    # → bin/dechat-admin
-make run            # go run ./cmd/server (reads .env)
-make docker-up      # full stack: db + app + web/Caddy edge (easiest way to run)
+make run            # go run ./cmd/server (reads environment variables)
+make docker-up      # full stack: db + app + web/Caddy edge + coturn + livekit SFU (easiest way to run)
 make docker-down
 make openapi        # writes ./openapi.json + ./openapi.yaml
 make vet            # go vet ./...
@@ -307,6 +307,8 @@ All settings from env vars (see `.env.example`):
 | `ADMIN_PASSWORD` | *(empty)* | empty → random password generated + logged once |
 | `LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error` |
 | `CORS_ORIGIN` | `*` | `*`, single origin, or comma-separated list |
+| `LIVEKIT_API_KEY` | *(empty)* | LiveKit SFU API key; must be set together with `LIVEKIT_API_SECRET` — a half-set pair fails Load, an empty pair disables the SFU feature. Compose fills the dev default `devkey` shared by the app and livekit services |
+| `LIVEKIT_API_SECRET` | *(empty)* | LiveKit SFU API secret, for minting access tokens (the token endpoint is a follow-up card); same pair rule. Compose dev default `dechat-dev-livekit-secret-change-me` |
 
 Web client: `VITE_API_URL` (default `http://localhost:8080`; leave empty in dev
 — Vite proxies `/api` to the backend).
@@ -362,6 +364,17 @@ Web client: `VITE_API_URL` (default `http://localhost:8080`; leave empty in dev
   the compose `app` service) and `caddy` (TLS edge + PWA — used by `web`).
   `docker-compose.yml` pins `build.target` for both; a bare `docker build .`
   without a target would build only the last stage (`caddy`).
+- **LiveKit SFU in compose.** The `livekit` service
+  (`livekit/livekit-server:v1.13.10`) reads `./livekit.yaml` (mounted
+  read-only); API keys live only in the `LIVEKIT_KEYS` env —
+  `"<key>: <secret>"` pairs, newline-separated, which **replaces** any
+  `keys:` section of the YAML (the file ships none; keep it secret-free).
+  Never run it with `--dev` (dev mode binds 127.0.0.1 inside the container,
+  so published ports stop working). In the compose bridge the server
+  advertises its container IP in ICE candidates — set
+  `rtc.node_ip`/`use_external_ip` in `livekit.yaml` for LAN/public use, and
+  keep the published UDP range identity-mapped to
+  `rtc.port_range_start/end` (candidates carry concrete ports).
 - **Web client build quirk (pnpm + esbuild).** pnpm v11 blocks esbuild's
   postinstall by default; `web/pnpm-workspace.yaml` allows it. If
   `pnpm build` fails with esbuild missing, run `pnpm rebuild esbuild` or

@@ -24,6 +24,9 @@ type Config struct {
 	// ICE carries the WebRTC STUN/TURN settings served to clients via
 	// GET /api/v1/call/config.
 	ICE ICEConfig
+	// LiveKit carries the LiveKit SFU API credentials; an empty pair means
+	// the SFU feature is disabled.
+	LiveKit LiveKitConfig
 }
 
 // ICEConfig holds the WebRTC ICE (STUN/TURN) server settings. STUN is always
@@ -35,6 +38,15 @@ type ICEConfig struct {
 	TURNURLs   []string      // empty -> TURN is disabled
 	TURNSecret string        // required when TURNURLs is non-empty
 	TURNTTL    time.Duration // lifetime of generated TURN credentials
+}
+
+// LiveKitConfig holds the API key/secret pair of the LiveKit SFU running in
+// docker-compose.yml. The backend needs the secret to mint short-lived
+// LiveKit access tokens for group calls (the token endpoint is a follow-up
+// card); an empty pair means the SFU feature is disabled.
+type LiveKitConfig struct {
+	APIKey    string
+	APISecret string
 }
 
 // Load reads configuration from the environment. Required values that are
@@ -106,6 +118,20 @@ func Load() (Config, error) {
 		TURNSecret: turnSecret,
 		TURNTTL:    turnTTL,
 	}
+
+	// --- LiveKit SFU --------------------------------------------------------
+	// The API pair is all-or-nothing: with only one half set, tokens minted
+	// for the SFU would be signed against an empty value (or validated
+	// against an empty key) and rejected — refuse to boot so the
+	// misconfiguration is caught early.
+	livekitKey := env("LIVEKIT_API_KEY", "")
+	livekitSecret := env("LIVEKIT_API_SECRET", "")
+	if (livekitKey == "") != (livekitSecret == "") {
+		return Config{}, fmt.Errorf(
+			"LIVEKIT_API_KEY and LIVEKIT_API_SECRET must be set together: set both to enable the LiveKit SFU, or neither to disable it",
+		)
+	}
+	cfg.LiveKit = LiveKitConfig{APIKey: livekitKey, APISecret: livekitSecret}
 
 	if cfg.AdminUsername == "" {
 		return Config{}, fmt.Errorf("ADMIN_USERNAME must not be empty")

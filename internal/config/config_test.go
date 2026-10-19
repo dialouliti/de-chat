@@ -119,3 +119,54 @@ func TestLoadNonPositiveTURNTTLWithTURN(t *testing.T) {
 		t.Fatal("Load must fail when TURN is configured with a non-positive TURN_TTL")
 	}
 }
+
+func TestLoadLiveKitDefault(t *testing.T) {
+	baseEnv(t)
+	// Empty behaves as unset: the pair check sees two empty values, which
+	// means the SFU feature is disabled. Set explicitly so a leaked host
+	// env var can't flip the outcome.
+	t.Setenv("LIVEKIT_API_KEY", "")
+	t.Setenv("LIVEKIT_API_SECRET", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LiveKit.APIKey != "" || cfg.LiveKit.APISecret != "" {
+		t.Fatalf("LiveKit = %+v, want the zero config (SFU disabled)", cfg.LiveKit)
+	}
+}
+
+func TestLoadLiveKitConfigured(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("LIVEKIT_API_KEY", "devkey")
+	t.Setenv("LIVEKIT_API_SECRET", "livekit-secret")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LiveKit.APIKey != "devkey" || cfg.LiveKit.APISecret != "livekit-secret" {
+		t.Fatalf("LiveKit = %+v, want {APIKey: devkey, APISecret: livekit-secret}", cfg.LiveKit)
+	}
+}
+
+func TestLoadLiveKitKeyWithoutSecret(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("LIVEKIT_API_KEY", "devkey")
+	t.Setenv("LIVEKIT_API_SECRET", "")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load must fail when LIVEKIT_API_KEY is set but LIVEKIT_API_SECRET is empty")
+	}
+}
+
+func TestLoadLiveKitSecretWithoutKey(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("LIVEKIT_API_KEY", "")
+	t.Setenv("LIVEKIT_API_SECRET", "livekit-secret")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load must fail when LIVEKIT_API_SECRET is set but LIVEKIT_API_KEY is empty")
+	}
+}

@@ -34,7 +34,7 @@ run-client: ## Run the console client locally (reads DECHAT_URL / environment)
 run-admin: ## Run the admin client locally (reads DECHAT_URL / environment)
 	$(GO) run ./cmd/admin
 
-run: ## Run the server locally (reads .env / environment)
+run: ## Run the server locally (reads environment variables)
 	$(GO) run ./cmd/server
 
 vet: ## Run go vet
@@ -46,7 +46,7 @@ test: ## Run tests
 fmt: ## Format the code
 	$(GO) fmt ./...
 
-docker-up: ## Build and start the full stack (db + app + web/Caddy) via docker compose
+docker-up: ## Build and start the full stack (db + app + web/Caddy + coturn + livekit) via docker compose
 	docker compose up --build
 
 docker-down: ## Stop and remove containers

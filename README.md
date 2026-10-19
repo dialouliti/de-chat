@@ -74,7 +74,7 @@ cp .env.example .env
 # ADMIN_PASSWORD empty to have a random one generated and logged on first
 # startup.
 
-make docker-up          # builds db + app + web, runs migrations, boots the stack
+make docker-up          # builds db + app + web + coturn + livekit, runs migrations, boots the stack
 ```
 
 On first boot the logs print the bootstrap admin credentials (if
@@ -96,6 +96,41 @@ be reachable from the internet, and Caddy obtains a Let's Encrypt
 certificate automatically. Optionally add an ACME email as a single
 `email you@example.com` line in the global block of the `Caddyfile`.
 
+**TURN for calls (optional).** The stack always runs a coturn service
+(STUN/TURN on 3478 udp+tcp, relay range 49160–49200/udp, short-lived
+credentials from a `TURN_SECRET` shared with the app; relaying into
+private, CGNAT and link-local IP ranges, IPv4 and IPv6, is denied). Its
+ports are published on loopback only by default — set
+`COTURN_BIND_ADDR=0.0.0.0` in `.env` to test calls from other LAN
+devices, and a strong `TURN_SECRET` when you do. Clients only use coturn
+when `TURN_URLS` is set — to enable locally, add
+`TURN_URLS=turn:localhost:3478?transport=udp` to `.env` and re-run
+`make docker-up`; `GET /api/v1/call/config` then includes a TURN entry with
+fresh credentials. Notes: TURN over TLS (5349/443) is not configured yet;
+overriding the image's default command drops its
+`--external-ip=$(detect-external-ip)` autodetection — for a NATed/public
+deployment add `--external-ip=<public-ip>` to the coturn command, publish
+the ports beyond loopback (`COTURN_BIND_ADDR`), and keep the relay range
+reachable; for public deployments set a
+strong `TURN_SECRET` — the value must not contain `$`, backticks or glob
+characters (the image entrypoint shell-expands command args;
+`openssl rand -base64 32` is safe).
+
+**LiveKit SFU (for upcoming group calls).** The stack also runs a LiveKit
+server (`livekit/livekit-server:v1.13.10`, config in
+[`livekit.yaml`](livekit.yaml)) — the selective forwarding unit that will
+route media for group calls of 3+ participants. The current 1:1 P2P calls
+don't use it, and no API endpoint talks to it yet (token minting is the
+next card). `make docker-up` always starts it: signaling on
+`ws://localhost:7880`, ICE-TCP on 7881, and a narrow 50100–50200/udp media
+range. Ports are published on loopback only by default — set
+`LIVEKIT_BIND_ADDR=0.0.0.0` in `.env` (plus a strong `LIVEKIT_API_SECRET`,
+and `rtc.node_ip` in `livekit.yaml` set to the machine's LAN IP) to test
+from other LAN devices. For a public deployment see the notes in
+`livekit.yaml` (`use_external_ip`, firewall ports) — LiveKit's docs
+recommend host networking there, which Docker Desktop (mac/win) cannot
+provide.
+
 Stop with `make docker-down`.
 
 ### Option B — local (without Docker)
@@ -107,7 +142,7 @@ You need Go 1.21+ and a reachable PostgreSQL instance.
 export DATABASE_URL="postgres://dechat:dechat@localhost:5432/dechat?sslmode=disable"
 export JWT_SECRET="$(openssl rand -base64 32)"
 
-make run                # go run ./cmd/server (reads .env / environment)
+make run                # go run ./cmd/server (reads environment variables)
 ```
 
 Migrations are applied automatically on startup. The API listens on
@@ -216,10 +251,14 @@ All settings come from environment variables (see `.env.example`):
 | `LOG_LEVEL`      | `info`      | `debug`/`info`/`warn`/`error`                      |
 | `CORS_ORIGIN`    | `*`         | Browser CORS: `*`, a single origin, or a list      |
 | `STUN_URLS`      | `stun:stun.l.google.com:19302` | Comma-separated STUN URLs, always served |
-| `TURN_URLS`      | *(empty)*   | Comma-separated TURN URLs; empty = TURN disabled   |
-| `TURN_SECRET`    | *(empty)*   | coturn shared secret for short-lived credentials (**required** when `TURN_URLS` is set; server refuses to boot otherwise) |
+| `TURN_URLS`      | *(empty)*   | Comma-separated TURN URLs; empty = TURN disabled. Public: `turn:turn.example.com:3478?transport=udp`; local compose stack: `turn:localhost:3478?transport=udp` |
+| `TURN_SECRET`    | *(empty)*   | coturn shared secret for short-lived credentials. **Required** when TURN_URLS is set when running outside docker compose — the server refuses to boot and reads no .env file itself; the `${VAR:-default}` substitution happens only in docker compose, which fills an empty value with the dev default `dechat-dev-turn-secret-change-me` shared by the app and coturn services. Override with `openssl rand -base64 32` for public deployments; avoid `$`, backticks and globs in the value (the coturn entrypoint shell-expands command args) |
 | `TURN_TTL`       | `1h`        | Lifetime of generated TURN credentials             |
 | `DOMAIN`         | `localhost` | Site name of the Caddy edge (web service); a real DNS name switches it to automatic Let's Encrypt |
+| `COTURN_BIND_ADDR` | `127.0.0.1` | Host address coturn's ports (3478 + relay range) are published on (docker compose only); `0.0.0.0` for LAN devices — then set a strong `TURN_SECRET` |
+| `LIVEKIT_API_KEY` | *(empty)* | LiveKit SFU API key. Must be set together with `LIVEKIT_API_SECRET` — exactly one of the two makes the server refuse to boot; empty pair = SFU feature disabled. Docker compose fills the dev default `devkey` (shared by the app and livekit services); the server itself reads no `.env` file |
+| `LIVEKIT_API_SECRET` | *(empty)* | LiveKit SFU API secret (the token-minting endpoint is a follow-up card); same pair rule as the key. Compose dev default `dechat-dev-livekit-secret-change-me` — override with `openssl rand -base64 32` for anything beyond loopback |
+| `LIVEKIT_BIND_ADDR` | `127.0.0.1` | Host address the LiveKit ports (7880, 7881, 50100–50200/udp) are published on (docker compose only); `0.0.0.0` for LAN devices — then set a strong `LIVEKIT_API_SECRET` and `rtc.node_ip` in `livekit.yaml` |
 
 ## OpenAPI spec
 
@@ -451,7 +490,8 @@ internal/
   server/               # graceful HTTP server lifecycle
 web/                    # React + TS PWA client (separate pnpm project)
 Dockerfile              # multi-stage build (targets: runtime = Go API, caddy = TLS edge + PWA)
-docker-compose.yml      # db + app + web (Caddy edge)
+docker-compose.yml      # db + app + web (Caddy edge) + coturn (STUN/TURN) + livekit (SFU)
+livekit.yaml            # LiveKit SFU config (API keys injected via env, never stored here)
 Caddyfile               # HTTPS termination, API/WS proxy, PWA static serving
 .dockerignore           # keeps secrets and generated files out of the build context
 Makefile                # build/run/test/docker targets

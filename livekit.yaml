@@ -1,0 +1,33 @@
+# LiveKit SFU configuration, mounted read-only into the `livekit` service of
+# docker-compose.yml (passed as `--config /etc/livekit.yaml`).
+#
+# API keys are deliberately NOT set in this file: the compose service
+# injects them at runtime via the LIVEKIT_KEYS env var, formatted as
+# "<api_key>: <api_secret>" pairs separated by newlines. That env var fully
+# replaces any `keys:` section of this file, so none is shipped — no secrets
+# in git.
+#
+# Public deployment notes (dev/LAN notes live in docker-compose.yml):
+# - In the compose bridge network LiveKit advertises its container IP in ICE
+#   candidates by default (empty node_ip + use_external_ip: false) — fine
+#   for other containers, unreachable from the host or LAN. For LAN testing
+#   set rtc.node_ip to this machine's LAN IPv4 (keep use_external_ip: false,
+#   it takes precedence); on a public VPS set use_external_ip: true (STUN
+#   lookup) or node_ip to the public IP.
+# - Open 7881/tcp and the whole UDP range below in the firewall. The range
+#   must exactly match the ports published in docker-compose.yml, identity-
+#   mapped — ICE candidates carry concrete ports, and LiveKit docs advise
+#   against NAT setups that remap them. Each participant occupies two ports
+#   of the range, so 101 ports serve ~50 participants.
+# - port 7880 (RoomService API + RTC signaling over HTTP/WS) belongs behind
+#   a TLS proxy in production (e.g. the existing Caddy edge); rtc.tcp_port
+#   and the UDP range must NOT be behind a load balancer or TLS.
+
+port: 7880                 # RoomService API + RTC signaling (HTTP/WS)
+rtc:
+  tcp_port: 7881           # ICE over TCP fallback, must be exposed as-is
+  port_range_start: 50100  # UDP media range — keep in sync with the ports
+  port_range_end: 50200    # published by the livekit compose service
+  use_external_ip: false   # true (or node_ip) for public deployments — above
+  # node_ip: 192.168.0.10  # LAN testing over the compose bridge: set to this
+                           # machine's LAN IPv4 (with use_external_ip: false)

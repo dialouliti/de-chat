@@ -31,8 +31,12 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       STUN_URLS: ${STUN_URLS:-stun:stun.l.google.com:19302}
       TURN_URLS: ${TURN_URLS:-}
-      TURN_SECRET: ${TURN_SECRET:-}
+      TURN_SECRET: ${TURN_SECRET:-dechat-dev-turn-secret-change-me}
       TURN_TTL: ${TURN_TTL:-1h}
+      # LiveKit SFU API pair — the future token endpoint signs with these;
+      # must match the livekit service's LIVEKIT_KEYS below.
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-dechat-dev-livekit-secret-change-me}
     ports:
       - "127.0.0.1:8080:8080"
     healthcheck:
@@ -59,6 +63,98 @@ services:
     volumes:
       - caddy_data:/data
       - caddy_config:/config
+    restart: unless-stopped
+
+  coturn:
+    image: coturn/coturn:4.18.0-alpine
+    # STUN+TURN on 3478 (udp+tcp) with short-lived REST-API credentials
+    # (same TURN_SECRET as the app); relay range 49160-49200/udp.
+    # Ports are published on loopback only by default: with the dev
+    # TURN_SECRET anyone on the LAN could mint credentials and use coturn
+    # as a relay. Override COTURN_BIND_ADDR (e.g. 0.0.0.0) to test calls
+    # from other devices — and set a strong TURN_SECRET when you do.
+    # Image gotchas: docker-entrypoint.sh shell-evaluates every command arg,
+    # so the secret must not contain $, backticks or glob characters
+    # (openssl rand -base64 32 output is safe); overriding `command` drops
+    # the image default `--external-ip=$(detect-external-ip)` autodetect —
+    # add --external-ip manually for a NATed/public deployment.
+    # In 4.18+ the CLI and the DTLS listeners are OFF by default (no flags
+    # needed; --no-cli is deprecated, --no-dtls does not exist). TURN over
+    # TLS (5349/443) is a separate card: drop --no-tls and mount certs then.
+    command:
+      - "--log-file=stdout"     # so `docker compose logs coturn` shows output
+      - "--listening-port=3478"
+      - "--fingerprint"
+      - "--use-auth-secret"
+      - "--static-auth-secret=${TURN_SECRET:-dechat-dev-turn-secret-change-me}"
+      - "--realm=dechat"
+      - "--min-port=49160"
+      - "--max-port=49200"
+      - "--no-multicast-peers"  # never relay to multicast/broadcast (amplification)
+      # Never relay into private ranges: coturn shares the compose network
+      # with db/app, and a valid TURN client could otherwise reach them.
+      # IPv4 private + link-local + CGNAT (100.64/10), and IPv6 link-local
+      # (fe80::/10) + ULA (fc00::/7) — coturn relays over IPv6 too; today's
+      # bridge only gets ::1, but don't rely on that if IPv6 is ever enabled
+      # on the network.
+      - "--denied-peer-ip=10.0.0.0-10.255.255.255"
+      - "--denied-peer-ip=172.16.0.0-172.31.255.255"
+      - "--denied-peer-ip=192.168.0.0-192.168.255.255"
+      - "--denied-peer-ip=169.254.0.0-169.254.255.255"
+      - "--denied-peer-ip=100.64.0.0-100.127.255.255"
+      - "--denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+      - "--denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+      - "--stale-nonce"         # limited nonce lifetime (600s), pairs with auth-secret
+      - "--no-tls"              # TURN over TLS is not part of this card
+    ports:
+      - "${COTURN_BIND_ADDR:-127.0.0.1}:3478:3478/udp"
+      - "${COTURN_BIND_ADDR:-127.0.0.1}:3478:3478/tcp"
+      # relay range, matches --min/--max-port
+      - "${COTURN_BIND_ADDR:-127.0.0.1}:49160-49200:49160-49200/udp"
+    restart: unless-stopped
+
+  livekit:
+    image: livekit/livekit-server:v1.13.10
+    # LiveKit SFU — the media router for the upcoming group calls (3+
+    # participants). Today's P2P calls don't use it, and no API endpoint
+    # talks to it yet (token minting is the next card). Configuration comes
+    # from ./livekit.yaml (mounted read-only); API keys are injected ONLY
+    # via the LIVEKIT_KEYS env — no secrets in the config file.
+    # Ports are published on loopback only by default: with the dev
+    # LIVEKIT_API_SECRET anyone on the LAN could mint room tokens and drive
+    # the SFU. Override LIVEKIT_BIND_ADDR (e.g. 0.0.0.0) to test calls from
+    # other devices — and set a strong LIVEKIT_API_SECRET when you do.
+    # Bridge-network gotchas (LiveKit docs recommend host networking in
+    # production, which Docker Desktop on mac/win can't provide):
+    # - in a bridge network the server advertises its container IP in ICE
+    #   candidates — for clients on the host/LAN set rtc.node_ip in
+    #   livekit.yaml to the machine's LAN IP (use_external_ip: false); on a
+    #   public VPS use_external_ip: true or node_ip = the public IP;
+    # - the UDP range must stay identity-mapped (host port == container
+    #   port): ICE candidates carry concrete ports and LiveKit docs advise
+    #   against NAT setups that remap them — keep it in sync with
+    #   livekit.yaml's port_range_start/end;
+    # - never add --dev: dev mode binds 127.0.0.1 inside the container, so
+    #   published ports stop working.
+    command: ["--config", "/etc/livekit.yaml"]
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    environment:
+      # "<api_key>: <api_secret>" pairs, newline-separated. Fully replaces
+      # any keys: section of the mounted YAML (which ships none).
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-dechat-dev-livekit-secret-change-me}"
+    ports:
+      - "${LIVEKIT_BIND_ADDR:-127.0.0.1}:7880:7880/tcp"   # signaling (RoomService + RTC)
+      - "${LIVEKIT_BIND_ADDR:-127.0.0.1}:7881:7881/tcp"   # ICE over TCP
+      # RTC media range, matches rtc.port_range_start/end in livekit.yaml
+      - "${LIVEKIT_BIND_ADDR:-127.0.0.1}:50100-50200:50100-50200/udp"
+    healthcheck:
+      # GET / answers 200 "OK" once the node is up, 406 "Not Ready" before
+      # that; the alpine-based image ships busybox wget (no curl).
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:7880/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
 volumes:
