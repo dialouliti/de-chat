@@ -43,8 +43,10 @@ type ICEConfig struct {
 // LiveKitConfig holds the API key/secret pair of the LiveKit SFU running in
 // docker-compose.yml. The backend needs the secret to mint short-lived
 // LiveKit access tokens for group calls (the token endpoint is a follow-up
-// card); an empty pair means the SFU feature is disabled.
+// card); an empty pair means the SFU feature is disabled. URL is the
+// signaling address handed to clients together with a token.
 type LiveKitConfig struct {
+	URL       string
 	APIKey    string
 	APISecret string
 }
@@ -131,7 +133,13 @@ func Load() (Config, error) {
 			"LIVEKIT_API_KEY and LIVEKIT_API_SECRET must be set together: set both to enable the LiveKit SFU, or neither to disable it",
 		)
 	}
-	cfg.LiveKit = LiveKitConfig{APIKey: livekitKey, APISecret: livekitSecret}
+	// Like STUN_URLS, the SFU URL always has a sensible default (the compose
+	// stack publishes the SFU on loopback) so the setting is never required.
+	cfg.LiveKit = LiveKitConfig{
+		URL:       env("LIVEKIT_URL", defaultLiveKitURL),
+		APIKey:    livekitKey,
+		APISecret: livekitSecret,
+	}
 
 	if cfg.AdminUsername == "" {
 		return Config{}, fmt.Errorf("ADMIN_USERNAME must not be empty")
@@ -153,6 +161,12 @@ const (
 	defaultSTUNURLs = "stun:stun.l.google.com:19302"
 	defaultTURNTTL  = "1h"
 )
+
+// defaultLiveKitURL is the LiveKit signaling URL clients connect their call
+// token to; it matches the loopback-published livekit service of the compose
+// stack. The URL is consumed by the client browser, so it must resolve where
+// the browser runs — a docker-bridge service name would not.
+const defaultLiveKitURL = "ws://localhost:7880"
 
 // splitCSV splits a comma-separated env value into trimmed, non-empty items.
 // Whitespace around entries is tolerated ("a, b" -> ["a", "b"]); an empty

@@ -1,10 +1,12 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -13,21 +15,25 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 
 	"github.com/pavelananev/dechat/internal/auth"
 	"github.com/pavelananev/dechat/internal/config"
+	"github.com/pavelananev/dechat/internal/models"
+	"github.com/pavelananev/dechat/internal/store/postgres"
 )
 
 // newCallRouter builds a minimal router that mirrors how router.go mounts the
-// call config endpoint: same path, inside a RequireAuth group. It exists so
-// the auth behavior of the route can be tested without a database.
-func newCallRouter(authSvc *auth.Service, ice config.ICEConfig) http.Handler {
+// call endpoints: same paths, inside a RequireAuth group. It exists so the
+// auth behavior of the routes can be tested without a database.
+func newCallRouter(authSvc *auth.Service, deps CallDeps) http.Handler {
 	r := chi.NewRouter()
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Group(func(r chi.Router) {
 			r.Use(authSvc.RequireAuth)
-			r.Get("/call/config", CallDeps{ICE: ice}.CallConfig)
+			r.Get("/call/config", CallDeps{ICE: deps.ICE}.CallConfig)
+			r.Post("/rooms/{id}/call", deps.StartCall)
 		})
 	})
 	return r
@@ -124,10 +130,10 @@ func TestCallConfigSTUNOnly(t *testing.T) {
 	}
 
 	stun := []string{"stun:stun.example.com:3478"}
-	srv := httptest.NewServer(newCallRouter(authSvc, config.ICEConfig{
+	srv := httptest.NewServer(newCallRouter(authSvc, CallDeps{ICE: config.ICEConfig{
 		STUNURLs: stun,
 		TURNTTL:  time.Hour, // same default as config.Load
-	}))
+	}}))
 	defer srv.Close()
 
 	status, body := getCallConfig(t, srv, token)
@@ -165,12 +171,12 @@ func TestCallConfigWithTURN(t *testing.T) {
 		"turn:turn.example.com:3478?transport=udp",
 		"turn:turn.example.com:3478?transport=tcp",
 	}
-	srv := httptest.NewServer(newCallRouter(authSvc, config.ICEConfig{
+	srv := httptest.NewServer(newCallRouter(authSvc, CallDeps{ICE: config.ICEConfig{
 		STUNURLs:   stun,
 		TURNURLs:   turn,
 		TURNSecret: turnSecret,
 		TURNTTL:    time.Hour,
-	}))
+	}}))
 	defer srv.Close()
 
 	before := time.Now().Unix()
@@ -218,10 +224,10 @@ func TestCallConfigWithTURN(t *testing.T) {
 // TestCallConfigUnauthorized checks the RequireAuth gate on the route.
 func TestCallConfigUnauthorized(t *testing.T) {
 	authSvc := auth.New("test-jwt-secret-0123456789abcdef", time.Hour)
-	srv := httptest.NewServer(newCallRouter(authSvc, config.ICEConfig{
+	srv := httptest.NewServer(newCallRouter(authSvc, CallDeps{ICE: config.ICEConfig{
 		STUNURLs: []string{"stun:stun.example.com:3478"},
 		TURNTTL:  time.Hour,
-	}))
+	}}))
 	defer srv.Close()
 
 	if status, _ := getCallConfig(t, srv, ""); status != http.StatusUnauthorized {
@@ -229,5 +235,209 @@ func TestCallConfigUnauthorized(t *testing.T) {
 	}
 	if status, _ := getCallConfig(t, srv, "not-a-jwt"); status != http.StatusUnauthorized {
 		t.Fatalf("bad token: status = %d, want %d", status, http.StatusUnauthorized)
+	}
+}
+
+// --- POST /rooms/{id}/call -------------------------------------------------
+
+// fakeRoomGetter implements RoomGetter for the StartCall tests: it knows
+// exactly one room and answers postgres.ErrNotFound for anything else. With
+// fail set, every lookup fails with a plain error (the 500 path).
+type fakeRoomGetter struct {
+	room models.Room
+	fail bool
+}
+
+var _ RoomGetter = (*fakeRoomGetter)(nil)
+
+func (f *fakeRoomGetter) GetRoomByID(ctx context.Context, id uuid.UUID) (models.Room, error) {
+	if f.fail {
+		return models.Room{}, errors.New("fakeRoomGetter: simulated store failure")
+	}
+	if id == f.room.ID {
+		return f.room, nil
+	}
+	return models.Room{}, postgres.ErrNotFound
+}
+
+// startCall performs one authenticated POST /api/v1/rooms/{roomID}/call and
+// decodes the body. An empty token sends no Authorization header.
+func startCall(t *testing.T, srv *httptest.Server, token, roomID string) (int, callTokenResponse) {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/rooms/"+roomID+"/call", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("post /rooms/%s/call: %v", roomID, err)
+	}
+	defer resp.Body.Close()
+
+	var body callTokenResponse
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+	}
+	return resp.StatusCode, body
+}
+
+// livekitTestPair mirrors the compose dev defaults for the SFU API pair.
+var livekitTestPair = config.LiveKitConfig{
+	URL:       "ws://livekit.example.com:7880",
+	APIKey:    "devkey",
+	APISecret: "livekit-test-secret",
+}
+
+// TestStartCallUnauthorized checks the RequireAuth gate on the route.
+func TestStartCallUnauthorized(t *testing.T) {
+	authSvc := auth.New("test-jwt-secret-0123456789abcdef", time.Hour)
+	srv := httptest.NewServer(newCallRouter(authSvc, CallDeps{LiveKit: livekitTestPair}))
+	defer srv.Close()
+
+	roomID := uuid.New().String()
+	if status, _ := startCall(t, srv, "", roomID); status != http.StatusUnauthorized {
+		t.Fatalf("no token: status = %d, want %d", status, http.StatusUnauthorized)
+	}
+	if status, _ := startCall(t, srv, "not-a-jwt", roomID); status != http.StatusUnauthorized {
+		t.Fatalf("bad token: status = %d, want %d", status, http.StatusUnauthorized)
+	}
+}
+
+// TestStartCallInvalidRoomID checks the 400 on a non-UUID room id.
+func TestStartCallInvalidRoomID(t *testing.T) {
+	authSvc := auth.New("test-jwt-secret-0123456789abcdef", time.Hour)
+	token, err := authSvc.IssueToken(uuid.New(), "alice", "user")
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+	srv := httptest.NewServer(newCallRouter(authSvc, CallDeps{LiveKit: livekitTestPair}))
+	defer srv.Close()
+
+	if status, _ := startCall(t, srv, token, "not-a-uuid"); status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", status, http.StatusBadRequest)
+	}
+}
+
+// TestStartCallSFUDisabled checks the 503 when the server has no LiveKit API
+// pair. The store is nil on purpose: the disabled check runs before it, and
+// a nil interface would panic (failing the test) if that order ever broke.
+func TestStartCallSFUDisabled(t *testing.T) {
+	authSvc := auth.New("test-jwt-secret-0123456789abcdef", time.Hour)
+	token, err := authSvc.IssueToken(uuid.New(), "alice", "user")
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+	srv := httptest.NewServer(newCallRouter(authSvc, CallDeps{
+		LiveKit: config.LiveKitConfig{URL: "ws://livekit.example.com:7880"}, // no API pair
+	}))
+	defer srv.Close()
+
+	if status, _ := startCall(t, srv, token, uuid.New().String()); status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", status, http.StatusServiceUnavailable)
+	}
+}
+
+// TestStartCallRoomNotFound checks the 404 for a room the store doesn't know.
+func TestStartCallRoomNotFound(t *testing.T) {
+	authSvc := auth.New("test-jwt-secret-0123456789abcdef", time.Hour)
+	token, err := authSvc.IssueToken(uuid.New(), "alice", "user")
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+	srv := httptest.NewServer(newCallRouter(authSvc, CallDeps{
+		Store:   &fakeRoomGetter{room: models.Room{ID: uuid.New()}},
+		LiveKit: livekitTestPair,
+	}))
+	defer srv.Close()
+
+	if status, _ := startCall(t, srv, token, uuid.New().String()); status != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", status, http.StatusNotFound)
+	}
+}
+
+// TestStartCallStoreError checks that a failing store surfaces as a 500, not
+// as a token.
+func TestStartCallStoreError(t *testing.T) {
+	authSvc := auth.New("test-jwt-secret-0123456789abcdef", time.Hour)
+	token, err := authSvc.IssueToken(uuid.New(), "alice", "user")
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+	srv := httptest.NewServer(newCallRouter(authSvc, CallDeps{
+		Store:   &fakeRoomGetter{fail: true},
+		LiveKit: livekitTestPair,
+	}))
+	defer srv.Close()
+
+	if status, _ := startCall(t, srv, token, uuid.New().String()); status != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", status, http.StatusInternalServerError)
+	}
+}
+
+// TestStartCallOK checks the happy path: the configured SFU URL is passed
+// through and the token is a valid LiveKit access JWT for the caller and the
+// room — verified by parsing it with the API secret, exactly like the SFU
+// would.
+func TestStartCallOK(t *testing.T) {
+	userID := uuid.New()
+	room := models.Room{ID: uuid.New(), Name: "general"}
+	authSvc := auth.New("test-jwt-secret-0123456789abcdef", time.Hour)
+	token, err := authSvc.IssueToken(userID, "alice", "user")
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+	srv := httptest.NewServer(newCallRouter(authSvc, CallDeps{
+		Store:   &fakeRoomGetter{room: room},
+		LiveKit: livekitTestPair,
+	}))
+	defer srv.Close()
+
+	before := time.Now()
+	status, body := startCall(t, srv, token, room.ID.String())
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+
+	if body.URL != livekitTestPair.URL {
+		t.Fatalf("url = %q, want %q", body.URL, livekitTestPair.URL)
+	}
+	if body.ExpiresAt.Before(before) {
+		t.Fatalf("expires_at = %v, must be in the future", body.ExpiresAt)
+	}
+
+	claims := jwt.MapClaims{}
+	parsed, err := jwt.ParseWithClaims(body.Token, claims, func(t *jwt.Token) (any, error) {
+		return []byte(livekitTestPair.APISecret), nil
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
+	if err != nil {
+		t.Fatalf("parse call token: %v", err)
+	}
+	if !parsed.Valid {
+		t.Fatal("call token is not valid")
+	}
+	if got, _ := claims.GetSubject(); got != userID.String() {
+		t.Fatalf("sub = %q, want the caller's user id %q", got, userID.String())
+	}
+	if got, _ := claims.GetIssuer(); got != livekitTestPair.APIKey {
+		t.Fatalf("iss = %q, want %q", got, livekitTestPair.APIKey)
+	}
+	if got, _ := claims["name"]; got != "alice" {
+		t.Fatalf("name = %#v, want %q", got, "alice")
+	}
+	video, ok := claims["video"].(map[string]any)
+	if !ok {
+		t.Fatalf("video claim = %#v, want a grant object", claims["video"])
+	}
+	if got, _ := video["room"].(string); got != room.ID.String() {
+		t.Fatalf("video.room = %q, want the room id %q", got, room.ID.String())
+	}
+	if got, _ := video["roomJoin"].(bool); !got {
+		t.Fatalf("video.roomJoin = %#v, want true", video["roomJoin"])
 	}
 }

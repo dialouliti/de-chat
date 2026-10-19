@@ -77,6 +77,7 @@ func main() {
 		WS:         wsHandler,
 		CORSOrigin: cfg.CORSOrigin,
 		ICE:        cfg.ICE,
+		LiveKit:    cfg.LiveKit,
 	})
 
 	srv := server.New(cfg.ServerAddr, handler, log.With("component", "server"))

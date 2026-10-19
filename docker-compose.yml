@@ -33,10 +33,16 @@ services:
       TURN_URLS: ${TURN_URLS:-}
       TURN_SECRET: ${TURN_SECRET:-dechat-dev-turn-secret-change-me}
       TURN_TTL: ${TURN_TTL:-1h}
-      # LiveKit SFU API pair — the future token endpoint signs with these;
-      # must match the livekit service's LIVEKIT_KEYS below.
+      # LiveKit SFU: POST /rooms/{id}/call signs with this pair (must match
+      # the livekit service's LIVEKIT_KEYS below) and hands clients this
+      # signaling URL. The URL is consumed by the BROWSER, not by the app
+      # container — so it must resolve where the browser runs: the default
+      # matches the host-published 7880 (see the livekit service below, bound
+      # to LIVEKIT_BIND_ADDR); set the machine's LAN IP here (and
+      # LIVEKIT_BIND_ADDR=0.0.0.0) for calls from other devices.
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-dechat-dev-livekit-secret-change-me}
+      LIVEKIT_URL: ${LIVEKIT_URL:-ws://localhost:7880}
     ports:
       - "127.0.0.1:8080:8080"
     healthcheck:

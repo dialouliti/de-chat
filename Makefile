@@ -1,6 +1,10 @@
 .PHONY: help tidy run build build-client build-admin run-client run-admin vet test docker-up docker-down fmt openapi
 
-GO ?= go
+# Resolve the Go binary from PATH when available; otherwise fall back to the
+# macOS installer's default location. Non-interactive shells (hooks, CI) often
+# skip the profile that puts go on PATH, which made every target fail with
+# "go: No such file or directory".
+GO ?= $(shell command -v go 2>/dev/null || echo /usr/local/go/bin/go)
 
 # Build in pure-Go mode so no C toolchain is required (CGO is on by default on
 # macOS and pulls in net's C resolver, which fails when system headers like

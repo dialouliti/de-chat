@@ -22,6 +22,8 @@ type Deps struct {
 	CORSOrigin string
 	// ICE carries the WebRTC STUN/TURN settings served by GET /call/config.
 	ICE config.ICEConfig
+	// LiveKit carries the SFU URL + API pair served by POST /rooms/{id}/call.
+	LiveKit config.LiveKitConfig
 }
 
 // New builds the top-level http.Handler with all routes mounted under
@@ -57,6 +59,10 @@ func New(d Deps) http.Handler {
 			// WebRTC call config: STUN always; TURN with fresh short-lived
 			// credentials when the server is configured for it.
 			r.Get("/call/config", CallDeps{ICE: d.ICE}.CallConfig)
+
+			// Group calls over the LiveKit SFU: mint a room-scoped access
+			// token (503 when the SFU is not configured).
+			r.Post("/rooms/{id}/call", CallDeps{Store: d.Store, ICE: d.ICE, LiveKit: d.LiveKit}.StartCall)
 
 			// Room list + message history are available to any user.
 			r.Get("/rooms", RoomDeps{Store: d.Store}.ListRooms)

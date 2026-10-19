@@ -257,7 +257,8 @@ All settings come from environment variables (see `.env.example`):
 | `DOMAIN`         | `localhost` | Site name of the Caddy edge (web service); a real DNS name switches it to automatic Let's Encrypt |
 | `COTURN_BIND_ADDR` | `127.0.0.1` | Host address coturn's ports (3478 + relay range) are published on (docker compose only); `0.0.0.0` for LAN devices — then set a strong `TURN_SECRET` |
 | `LIVEKIT_API_KEY` | *(empty)* | LiveKit SFU API key. Must be set together with `LIVEKIT_API_SECRET` — exactly one of the two makes the server refuse to boot; empty pair = SFU feature disabled. Docker compose fills the dev default `devkey` (shared by the app and livekit services); the server itself reads no `.env` file |
-| `LIVEKIT_API_SECRET` | *(empty)* | LiveKit SFU API secret (the token-minting endpoint is a follow-up card); same pair rule as the key. Compose dev default `dechat-dev-livekit-secret-change-me` — override with `openssl rand -base64 32` for anything beyond loopback |
+| `LIVEKIT_API_SECRET` | *(empty)* | LiveKit SFU API secret, used to sign the room call tokens from `POST /rooms/{id}/call`; same pair rule as the key. Compose dev default `dechat-dev-livekit-secret-change-me` — override with `openssl rand -base64 32` for anything beyond loopback |
+| `LIVEKIT_URL` | `ws://localhost:7880` | LiveKit signaling URL returned with room call tokens. Consumed by the client **browser**, so it must resolve where the browser runs (a docker-bridge service name would not) — compose fills the same default via `${LIVEKIT_URL:-…}` matching the host-published 7880. For LAN devices set the machine's LAN IP (plus `LIVEKIT_BIND_ADDR=0.0.0.0`); `wss://…` when the SFU sits behind a TLS edge |
 | `LIVEKIT_BIND_ADDR` | `127.0.0.1` | Host address the LiveKit ports (7880, 7881, 50100–50200/udp) are published on (docker compose only); `0.0.0.0` for LAN devices — then set a strong `LIVEKIT_API_SECRET` and `rtc.node_ip` in `livekit.yaml` |
 
 ## OpenAPI spec
@@ -316,6 +317,7 @@ All endpoints are under `/api/v1`. Protected endpoints require
 | Method | Path           | Auth | Body / Notes                         |
 |--------|----------------|------|--------------------------------------|
 | GET    | `/call/config` | yes  | ICE servers for voice calls: `{ttl_seconds, ice_servers: [{urls, username?, credential?}]}`. A STUN entry is always present; a TURN entry is added only when `TURN_URLS` is configured, carrying fresh short-lived credentials (coturn REST API: username `"<unix-expiry>:<caller>"`, credential `base64(HMAC-SHA1(TURN_SECRET, username))`) regenerated on every request — refetch before `ttl_seconds` elapses, don't cache long-term |
+| POST   | `/rooms/{id}/call` | yes | Mint a LiveKit access token for the room's group call: `{url, token, expires_at}`. `url` is the SFU signaling address (`LIVEKIT_URL`); `token` is a JWT signed with the LiveKit API secret whose `video` grant is scoped to the single room (roomJoin, canPublish, canSubscribe, canPublishData), identity = the caller's user id, name = username, valid for 6h. 404 when the room does not exist; 503 when the SFU is disabled (empty `LIVEKIT_API_KEY`/`LIVEKIT_API_SECRET` pair) |
 
 ### Rooms & messages (any authenticated user)
 

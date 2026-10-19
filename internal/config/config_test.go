@@ -133,7 +133,11 @@ func TestLoadLiveKitDefault(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.LiveKit.APIKey != "" || cfg.LiveKit.APISecret != "" {
-		t.Fatalf("LiveKit = %+v, want the zero config (SFU disabled)", cfg.LiveKit)
+		t.Fatalf("LiveKit = %+v, want an empty API pair (SFU disabled)", cfg.LiveKit)
+	}
+	// The URL always has a default — like STUN_URLS, it is never required.
+	if cfg.LiveKit.URL != "ws://localhost:7880" {
+		t.Fatalf("LiveKit.URL = %q, want %q", cfg.LiveKit.URL, "ws://localhost:7880")
 	}
 }
 
@@ -141,6 +145,7 @@ func TestLoadLiveKitConfigured(t *testing.T) {
 	baseEnv(t)
 	t.Setenv("LIVEKIT_API_KEY", "devkey")
 	t.Setenv("LIVEKIT_API_SECRET", "livekit-secret")
+	t.Setenv("LIVEKIT_URL", "ws://livekit.example.com:7880")
 
 	cfg, err := Load()
 	if err != nil {
@@ -148,6 +153,9 @@ func TestLoadLiveKitConfigured(t *testing.T) {
 	}
 	if cfg.LiveKit.APIKey != "devkey" || cfg.LiveKit.APISecret != "livekit-secret" {
 		t.Fatalf("LiveKit = %+v, want {APIKey: devkey, APISecret: livekit-secret}", cfg.LiveKit)
+	}
+	if cfg.LiveKit.URL != "ws://livekit.example.com:7880" {
+		t.Fatalf("LiveKit.URL = %q, want %q", cfg.LiveKit.URL, "ws://livekit.example.com:7880")
 	}
 }
 

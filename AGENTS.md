@@ -217,6 +217,7 @@ GET    /ws                                       (public; ?token= auth) WS.Serve
   GET    /me
   GET    /me/unread
   GET    /call/config                                                   CallConfig
+  POST   /rooms/{id}/call                                               StartCall
   GET    /rooms
   GET    /rooms/{id}/messages   ?limit&before&after
   DELETE /api/v1/rooms/{id}                     (owner-or-admin)       DeleteRoom
@@ -307,8 +308,9 @@ All settings from env vars (see `.env.example`):
 | `ADMIN_PASSWORD` | *(empty)* | empty → random password generated + logged once |
 | `LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error` |
 | `CORS_ORIGIN` | `*` | `*`, single origin, or comma-separated list |
-| `LIVEKIT_API_KEY` | *(empty)* | LiveKit SFU API key; must be set together with `LIVEKIT_API_SECRET` — a half-set pair fails Load, an empty pair disables the SFU feature. Compose fills the dev default `devkey` shared by the app and livekit services |
-| `LIVEKIT_API_SECRET` | *(empty)* | LiveKit SFU API secret, for minting access tokens (the token endpoint is a follow-up card); same pair rule. Compose dev default `dechat-dev-livekit-secret-change-me` |
+| `LIVEKIT_API_KEY` | *(empty)* | LiveKit SFU API key; must be set together with `LIVEKIT_API_SECRET` — a half-set pair fails Load, an empty pair disables the SFU feature (then `POST /rooms/{id}/call` answers 503). Compose fills the dev default `devkey` shared by the app and livekit services |
+| `LIVEKIT_API_SECRET` | *(empty)* | LiveKit SFU API secret, for minting access tokens (internal/livekit.AccessToken, HS256 JWT with a room-scoped video grant, 6h TTL); same pair rule. Compose dev default `dechat-dev-livekit-secret-change-me` |
+| `LIVEKIT_URL` | `ws://localhost:7880` | LiveKit signaling URL returned with room call tokens. Consumed by the client browser — must resolve where the browser runs, so compose fills `${LIVEKIT_URL:-ws://localhost:7880}` (the host-published 7880), never the docker-bridge service name |
 
 Web client: `VITE_API_URL` (default `http://localhost:8080`; leave empty in dev
 — Vite proxies `/api` to the backend).

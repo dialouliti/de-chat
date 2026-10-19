@@ -64,6 +64,7 @@ func BuildSpec() (*openapi3.T, error) {
 		{"RoomUnread", models.RoomUnread{}},
 		{"ICEServer", iceServer{}}, // nested in CallConfigResponse.ice_servers
 		{"CallConfigResponse", callConfigResponse{}},
+		{"CallTokenResponse", callTokenResponse{}},
 		// WebSocket envelopes (documented in info.description, not as a path).
 		{"ClientMsg", models.ClientMsg{}},
 		{"ServerMsg", models.ServerMsg{}},
@@ -242,6 +243,26 @@ func BuildSpec() (*openapi3.T, error) {
 			Responses: responses(
 				rr("200", refResp("OK", "CallConfigResponse")),
 				rr("401", errResp()),
+			),
+		},
+	})
+
+	// ---- Authed: POST /rooms/{id}/call -------------------------------------
+
+	paths.Set("/api/v1/rooms/{id}/call", &openapi3.PathItem{
+		Post: &openapi3.Operation{
+			OperationID: "startRoomCall",
+			Tags:        []string{"calls"},
+			Summary:     "Start / join a room call (LiveKit access token)",
+			Description: "Returns a short-lived LiveKit access token plus the SFU URL to connect it to, for joining the room's group call. The token is a JWT signed with the server's LiveKit API secret; its `video` grant is scoped to the single room and grants roomJoin, canPublish, canSubscribe and canPublishData. The caller's user id is the token identity (`sub`) and their username the display name (`name`). Tokens are valid for 6 hours; clients may call again for a fresh one. Answered 503 when the server has no LiveKit API pair configured (SFU feature disabled).",
+			Security:    jwt(),
+			Parameters:  openapi3.Parameters{uuidPath("id", "Room ID")},
+			Responses: responses(
+				rr("200", refResp("OK", "CallTokenResponse")),
+				rr("400", errResp()),
+				rr("401", errResp()),
+				rr("404", errResp()),
+				rr("503", errResp()),
 			),
 		},
 	})
